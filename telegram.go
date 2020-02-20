@@ -28,7 +28,6 @@ package MTHelper
 
 import (
 	"errors"
-	"fmt"
 	"github.com/op/go-logging"
 	mt "github.com/Arman92/go-tdlib"
 	"github.com/xlzd/gotp"
@@ -238,10 +237,17 @@ func (tg *Telegram) AddCommand(cmd string, cmdFunc CFunc) error {
 func (tg *Telegram) HandleUpdates() {
 	receiver := tg.Client.AddEventReceiver(&mt.UpdateNewMessage{}, func(msg *mt.TdMessage) bool {
 		updateMsg := (*msg).(*mt.UpdateNewMessage)
-		return updateMsg != nil && updateMsg.Message != nil && !updateMsg.Message.IsOutgoing
+		if updateMsg != nil && updateMsg.Message != nil && !updateMsg.Message.IsOutgoing {
+			content := updateMsg.Message.Content.(*mt.MessageText)
+			return content != nil && content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/'
+		}
+		return false
 	}, updatesBuffer)
 	if receiver.Chan != nil {
 		for up := range receiver.Chan {
+			if !tg.connected{
+				break
+			}
 			updateMsg := (up).(*mt.UpdateNewMessage)
 			logger.Debugf("Got new update: %v", updateMsg)
 			go tg.processCommand(updateMsg.Message)
