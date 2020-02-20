@@ -1,0 +1,5 @@
+/dbdir
+/fdir
+*.log
+/.idea
+/go.sum
