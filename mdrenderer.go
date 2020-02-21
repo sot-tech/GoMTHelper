@@ -25,7 +25,10 @@
  */
 
 package MTHelper
-import md "github.com/russross/blackfriday"
+import (
+	md "github.com/russross/blackfriday"
+	"unicode/utf8"
+)
 import mt "github.com/Arman92/go-tdlib"
 import "io"
 
@@ -57,7 +60,7 @@ func (r *TGRenderer) GetEntities() []mt.TextEntity{
 
 func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.WalkStatus{
 	s := string(node.Literal)
-	l := len(s)
+	l := utf8.RuneCountInString(s)
 	if entering {
 		var t mt.TextEntityType
 		var extra string
@@ -67,7 +70,7 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 		case md.Emph:
 			t = mt.NewTextEntityTypeItalic()
 		case md.Del:
-			t = mt.NewTextEntityTypeCashtag() //TODO: check
+			t = nil //FIXME: Did not found any type for del
 		case md.Link:
 			t = mt.NewTextEntityTypeTextURL(string(node.Destination))
 		case md.Code:
