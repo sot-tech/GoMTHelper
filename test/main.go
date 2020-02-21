@@ -28,153 +28,73 @@ package main
 
 import (
 	MTHelper "MTPHelper"
+	"encoding/json"
+	"flag"
 	"fmt"
-	mt "github.com/Arman92/go-tdlib"
-	"math"
+	"github.com/op/go-logging"
+	"io/ioutil"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 )
 
-func authorize(client *mt.Client) {
-	for {
-		currentState, _ := client.Authorize()
-		stateEnum := currentState.GetAuthorizationStateEnum()
-		if stateEnum == mt.AuthorizationStateWaitPhoneNumberType {
-			fmt.Print("Enter phone: ")
-			var number string
-			var err error
-			if _, err = fmt.Scanln(&number); err == nil {
-				_, err = client.SendPhoneNumber(number)
-			}
-			if err != nil {
-				fmt.Printf("Error sending phone number: %v", err)
-			}
-		} else if stateEnum == mt.AuthorizationStateWaitCodeType {
-			fmt.Print("Enter code: ")
-			var code string
-			var err error
-			if _, err = fmt.Scanln(&code); err == nil {
-				_, err = client.SendAuthCode(code)
-			}
-			if err != nil {
-				fmt.Printf("Error sending auth code : %v", err)
-			}
-		} else if stateEnum == mt.AuthorizationStateWaitPasswordType {
-			fmt.Print("Enter Password: ")
-			var password string
-			var err error
-			if _, err = fmt.Scanln(&password); err == nil {
-				_, err = client.SendAuthPassword(password)
-			}
-			if err != nil {
-				fmt.Printf("Error sending auth password: %v", err)
-			}
-		} else if stateEnum == mt.AuthorizationStateReadyType {
-			fmt.Println("Authorization Ready! Let's rock")
-			break
-		}
-	}
-}
-
-const chatsPageNum int32 = 100
-
-func getChats(client *mt.Client) ([]int64, error){
-	var err error
-	allChats := make([]int64, 0, 50)
-	var chatIdOffset int64
-	offsetOrder := mt.JSONInt64(math.MaxInt64)
-	for{
-		var chats *mt.Chats
-		if chats, err = client.GetChats(offsetOrder, chatIdOffset, chatsPageNum); err == nil{
-			if chats == nil || len(chats.ChatIDs) == 0{
-				break
-			}
-			allChats = append(allChats, chats.ChatIDs...)
-			chatIdOffset = allChats[len(allChats)-1]
-			var chat *mt.Chat
-			if chat, err = client.GetChat(chatIdOffset); err == nil{
-				if chat != nil{
-					offsetOrder = chat.Order
-				}
-			} else{
-				allChats = nil
-				break
-			}
-		} else{
-			allChats = nil
-			break
-		}
-	}
-	return allChats, err
-}
-
-
-
-func sendMessage(client *mt.Client, chat int64, text string) (int64, error) {
-	var err error
-	var id int64
-	msg := mt.NewInputMessageText(MTHelper.FormatText(text), true, true)
-	if sentMessage, e := client.SendMessage(chat, 0, false, false, nil, msg);
-		e != nil {
-		fmt.Println(e.Error())
-		err = e
-	} else if sentMessage != nil {
-		fmt.Println(sentMessage.ID)
-		id = sentMessage.ID
-	}
-	return id, err
+type Config struct {
+	ApiId   string
+	ApiHash string
+	Otp     string
+	Chats   []int64
+	Text    string
+	Image   string
+	Video   string
+	Msg     MTHelper.TGMessages
 }
 
 func main() {
-	mt.SetLogVerbosityLevel(5)
-	mt.SetFilePath("test/errors.log")
-	client := mt.NewClient(mt.Config{
-		APIID:                  "-",
-		APIHash:                "-",
-		SystemLanguageCode:     "en",
-		DeviceModel:            runtime.GOOS,
-		SystemVersion:          "n/d",
-		ApplicationVersion:     "0.195284w",
-		UseTestDataCenter:      false,
-		DatabaseDirectory:      "test/dbdir",
-		FileDirectory:          "test/fdir",
-		UseFileDatabase:        false,
-		UseChatInfoDatabase:    false,
-		UseMessageDatabase:     false,
-		UseSecretChats:         false,
-		EnableStorageOptimizer: true,
-		IgnoreFileNames:        false,
-	})
-	defer client.DestroyInstance()
-	authorize(client)
-	go func() {
-		for update := range client.GetRawUpdatesChannel(0) {
-			fmt.Println(update.Data)
-		}
-	}()
-	if chats, err := getChats(client); err != nil {
-		println(err.Error())
-		os.Exit(1)
-	} else{
-		for _, chat := range chats {
-			fmt.Printf("Chat: %d\n", chat)
+	flag.Parse()
+	args := flag.Args()
+	logger := logging.MustGetLogger("main")
+	if len(args) == 0 {
+		logger.Fatal("argument not set")
+	}
+	confData, err := ioutil.ReadFile(args[0])
+	if err == nil {
+		conf := Config{}
+		if err = json.Unmarshal(confData, &conf); err == nil {
+			MTHelper.SetupMtLog("test/mt.log", MTHelper.MtLogWarning)
+			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
+			tg.Messages = conf.Msg
+			var authFunc func(input string) string
+			if len(args) > 1 && args[1] == "--auth" {
+				authFunc = func(input string) string {
+					fmt.Println(input)
+					var res string
+					if _, err := fmt.Scanln(&res); err != nil {
+						logger.Error(err)
+					}
+					return res
+				}
+			}
+			if err = tg.Login(authFunc, -1); err == nil {
+				go tg.HandleUpdates()
+				tg.SendMsg(conf.Text, conf.Chats, true)
+				//tg.SendPhoto(MTHelper.MediaParams{
+				//	Path:   conf.Image,
+				//	Width:  0,
+				//	Height: 0,
+				//}, conf.Text, conf.Chats, true)
+				tg.SendVideo(MTHelper.MediaParams{
+					Path:      conf.Video,
+					Width:     1280,
+					Height:    720,
+					Streaming: true,
+					Thumbnail: nil,
+				}, conf.Text, conf.Chats, true)
+			}
 		}
 	}
-	if state, err := client.GetAuthorizationState(); err == nil{
-		fmt.Println(state)
-	} else{
-		fmt.Println(err)
+	if err != nil {
+		logger.Fatal(err)
 	}
-	_, _ = sendMessage(client, 1053007259, "**strong-text** \\* _curse-text_\n**_strongcurse-text_** **_`code-text`_** [**_strong-surse-link_**](http://some.site) ~~stroked-text~~\n[link-text](http://link.addr)\n```go\ncode\nblock\n```")
-	//video := mt.NewInputMessageVideo(mt.NewInputFileLocal("/home/sot/Downloads/TEST.mp4"), nil, nil, 0, 1280, 720, true, mt.NewFormattedText("**TEST**", nil), 0)
-	//if sentMessage, err := client.SendMessage(1053007259, 0, false, false, nil, video);
-	//	err != nil {
-	//	fmt.Println(err.Error())
-	//} else if sentMessage != nil {
-	//	fmt.Println(sentMessage.ID)
-	//}
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
