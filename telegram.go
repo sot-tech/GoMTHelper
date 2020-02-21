@@ -450,7 +450,7 @@ connect:
 			switch stateEnum {
 			case mt.AuthorizationStateWaitEncryptionKeyType:
 				logger.Info(string(stateEnum))
-				time.Sleep(10 * time.Second)
+				time.Sleep(time.Second)
 				continue
 			case mt.AuthorizationStateReadyType:
 				var me *mt.User
