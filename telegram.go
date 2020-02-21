@@ -440,7 +440,7 @@ func (tg *Telegram) Connect(timeout int) error {
 	return tg.Login(nil, timeout)
 }
 
-func (tg *Telegram) Login(inputHandler func(string) string, timeout int) error {
+func (tg *Telegram) Login(inputHandler func(string) (string, error), timeout int) error {
 	var err error
 connect:
 	for try := 0; try < timeout || timeout < 0; try++ {
@@ -476,11 +476,13 @@ connect:
 					err = errors.New("unauthorized")
 					break connect
 				} else {
-					number := inputHandler(string(stateEnum))
-					if strings.IndexRune(number, ':') > 0 {
-						_, err = tg.Client.CheckAuthenticationBotToken(number)
-					} else {
-						_, err = tg.Client.SendPhoneNumber(number)
+					var number string
+					if number, err = inputHandler(string(stateEnum)); err == nil {
+						if strings.IndexRune(number, ':') > 0 {
+							_, err = tg.Client.CheckAuthenticationBotToken(number)
+						} else {
+							_, err = tg.Client.SendPhoneNumber(number)
+						}
 					}
 					if err != nil {
 						break connect
@@ -490,15 +492,27 @@ connect:
 				if inputHandler == nil {
 					err = errors.New("unauthorized")
 					break connect
-				} else if _, err = tg.Client.SendAuthCode(inputHandler(string(stateEnum))); err != nil {
-					break connect
+				} else {
+					var code string
+					if code, err = inputHandler(string(stateEnum)); err == nil {
+						_, err = tg.Client.SendAuthCode(code)
+					}
+					if err != nil {
+						break connect
+					}
 				}
 			case mt.AuthorizationStateWaitPasswordType:
 				if inputHandler == nil {
 					err = errors.New("unauthorized")
 					break connect
-				} else if _, err = tg.Client.SendAuthPassword(inputHandler(string(stateEnum))); err != nil {
-					break connect
+				} else {
+					var password string
+					if password, err = inputHandler(string(stateEnum)); err == nil {
+						_, err = tg.Client.SendAuthPassword(password)
+					}
+					if err != nil {
+						break connect
+					}
 				}
 			}
 		} else {
