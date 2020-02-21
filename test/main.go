@@ -75,19 +75,18 @@ func main() {
 				}
 			}
 			if err = tg.Login(authFunc, -1); err == nil {
-				go tg.HandleUpdates()
+				tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
-				//tg.SendPhoto(MTHelper.MediaParams{
-				//	Path:   conf.Image,
-				//	Width:  0,
-				//	Height: 0,
-				//}, conf.Text, conf.Chats, true)
+				tg.SendPhoto(MTHelper.MediaParams{
+					Path:   conf.Image,
+					Width:  0,
+					Height: 0,
+				}, conf.Text, conf.Chats, true)
 				tg.SendVideo(MTHelper.MediaParams{
 					Path:      conf.Video,
-					Width:     1280,
-					Height:    720,
+					Width:     0,
+					Height:    0,
 					Streaming: true,
-					Thumbnail: nil,
 				}, conf.Text, conf.Chats, true)
 			}
 		}

@@ -96,7 +96,6 @@ type MediaParams struct {
 	Width     int32
 	Height    int32
 	Streaming bool
-	Thumbnail *MediaParams
 }
 
 type Telegram struct {
@@ -108,7 +107,7 @@ type Telegram struct {
 	totp             *gotp.TOTP
 	IsBot            bool
 	connected        bool
-	fileUploadChan   chan int32
+	fileUploadChan   chan string
 	fileUploadMutex  sync.Mutex
 }
 
@@ -226,7 +225,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		}
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil {
-			logger.Warning("Command not found: %s, chat: %d", cmdStr, chat)
+			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
 		} else if err := cmd(chat, args); err != nil {
 			logger.Error(err)
@@ -267,7 +266,7 @@ func (tg *Telegram) HandleUpdates() {
 					break
 				}
 				updateMsg := up.(*mt.UpdateNewMessage)
-				logger.Debugf("Got new update: %v", updateMsg)
+				logger.Debugf("Got new update: %v", updateMsg.Message)
 				go tg.processCommand(updateMsg.Message)
 			}
 		} else {
@@ -278,12 +277,18 @@ func (tg *Telegram) HandleUpdates() {
 		if fileUploadReceiver.Chan != nil {
 			for up := range fileUploadReceiver.Chan {
 				if !tg.connected {
-					tg.fileUploadChan <- 0
+					tg.fileUploadChan <- ""
 					break
 				}
 				updateMsg := up.(*mt.UpdateFile)
-				if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil && updateMsg.File.Remote.IsUploadingCompleted {
-					tg.fileUploadChan <- updateMsg.File.ID
+				if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
+					if updateMsg.File.Remote.IsUploadingCompleted {
+						logger.Debug("File upload complete ", updateMsg.File.Remote.ID)
+						tg.fileUploadChan <- updateMsg.File.Remote.ID
+					} else{
+						logger.Debugf("File uploading %d/%d bytes", updateMsg.File.Remote.UploadedSize, updateMsg.File.Size)
+					}
+
 				}
 			}
 		} else {
@@ -305,7 +310,8 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 		for _, chatId := range chatIds {
 			if chat, err := tg.Client.GetChat(chatId); err == nil {
 				if chat != nil {
-					if _, err := tg.Client.SendMessage(chatId, 0, false, false, nil, msg); err == nil {
+					if _, err := tg.Client.SendMessage(chatId, 0, false,
+						false, nil, msg); err == nil {
 						logger.Debugf("Message to %d has been sent", chatId)
 					} else {
 						logger.Error(err)
@@ -313,31 +319,35 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 				} else {
 					logger.Errorf("Chat %d not found", chatId)
 				}
-			} else{
+			} else {
 				logger.Error(err)
 			}
 		}
 	}
 }
 
-func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageContent, idSetter func(*mt.InputFileID)) {
+func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageContent, idSetter func(*mt.InputFileRemote)) {
 	tg.fileUploadMutex.Lock()
 	defer tg.fileUploadMutex.Unlock()
-	firstUpload := true
+	uploadCnt := 0
+	var sentFileId string
 	for _, chatId := range chatIds {
 		if chat, err := tg.Client.GetChat(chatId); err == nil {
 			if chat != nil {
 				if _, err := tg.Client.SendMessage(chatId, 0, false,
 					false, nil, content); err == nil {
-					if firstUpload {
-						sentFileId := <-tg.fileUploadChan
-						if sentFileId == 0 {
+					// First upload as file, second as remote file id, next - as update message, so there's no updateFile event
+					if uploadCnt < 2 {
+						sentFileId = <-tg.fileUploadChan
+					}
+					if uploadCnt == 0 {
+						if len(sentFileId) == 0 {
 							logger.Warningf("Unable to get file Id")
 							break
 						}
-						idSetter(mt.NewInputFileID(sentFileId))
-						firstUpload = false
+						idSetter(mt.NewInputFileRemote(sentFileId))
 					}
+					uploadCnt++
 				} else {
 					logger.Error(err)
 				}
@@ -361,14 +371,9 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 			} else {
 				caption = mt.NewFormattedText(msgText, nil)
 			}
-			var thumb *mt.InputThumbnail
-			if photo.Thumbnail != nil && len(photo.Thumbnail.Path) > 0 {
-				thumb = mt.NewInputThumbnail(mt.NewInputFileLocal(photo.Thumbnail.Path), photo.Thumbnail.Width,
-					photo.Thumbnail.Height)
-			}
-			msg := mt.NewInputMessagePhoto(mt.NewInputFileLocal(photo.Path), thumb, nil, photo.Width,
+			msg := mt.NewInputMessagePhoto(mt.NewInputFileLocal(photo.Path), nil, nil, photo.Width,
 				photo.Height, caption, 0)
-			photoSetter := func(id *mt.InputFileID) {
+			photoSetter := func(id *mt.InputFileRemote) {
 				msg.Photo = id
 			}
 			tg.sendMediaMessage(chatIds, msg, photoSetter)
@@ -389,14 +394,9 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			} else {
 				caption = mt.NewFormattedText(msgText, nil)
 			}
-			var thumb *mt.InputThumbnail
-			if video.Thumbnail != nil && len(video.Thumbnail.Path) > 0 {
-				thumb = mt.NewInputThumbnail(mt.NewInputFileLocal(video.Thumbnail.Path), video.Thumbnail.Width,
-					video.Thumbnail.Height)
-			}
-			msg := mt.NewInputMessageVideo(mt.NewInputFileLocal(video.Path), thumb, nil, 0,
+			msg := mt.NewInputMessageVideo(mt.NewInputFileLocal(video.Path), nil, nil, 0,
 				video.Width, video.Height, video.Streaming, caption, 0)
-			videoSetter := func(id *mt.InputFileID) {
+			videoSetter := func(id *mt.InputFileRemote) {
 				msg.Video = id
 			}
 			tg.sendMediaMessage(chatIds, msg, videoSetter)
@@ -456,8 +456,8 @@ connect:
 					tg.connected = true
 					tg.IsBot = me.Type.GetUserTypeEnum() == mt.UserTypeBotType
 					logger.Infof("Authorized as %s", me.Username)
-					if !tg.IsBot{
-						if chats, err := tg.GetChats(); err == nil{
+					if !tg.IsBot {
+						if chats, err := tg.GetChats(); err == nil {
 							logger.Debugf("Reloaded chats: %v", chats)
 						}
 					}
@@ -516,7 +516,7 @@ func New(apiId, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
 	tg := &Telegram{
 		Commands:       make(map[string]CFunc),
 		totp:           gotp.NewDefaultTOTP(otpSeed),
-		fileUploadChan: make(chan int32),
+		fileUploadChan: make(chan string),
 	}
 	tg.Client = mt.NewClient(mt.Config{
 		APIID:                  apiId,
