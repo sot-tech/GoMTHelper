@@ -96,6 +96,7 @@ type MediaParams struct {
 	Width     int32
 	Height    int32
 	Streaming bool
+	Thumbnail *MediaParams
 }
 
 type Telegram struct {
@@ -368,12 +369,17 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 		} else {
 			logger.Debugf("Sending photo message %s to %v", msgText, chatIds)
 			var caption *mt.FormattedText
+			var thumbnail *mt.InputThumbnail
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
 				caption = mt.NewFormattedText(msgText, nil)
 			}
-			msg := mt.NewInputMessagePhoto(mt.NewInputFileLocal(photo.Path), nil, nil, photo.Width,
+			if photo.Thumbnail != nil && len(photo.Thumbnail.Path) > 0{
+				thumbnail = mt.NewInputThumbnail(mt.NewInputFileLocal(photo.Thumbnail.Path),
+					photo.Thumbnail.Width, photo.Thumbnail.Height)
+			}
+			msg := mt.NewInputMessagePhoto(mt.NewInputFileLocal(photo.Path), thumbnail, nil, photo.Width,
 				photo.Height, caption, 0)
 			photoSetter := func(id *mt.InputFileRemote) {
 				msg.Photo = id
@@ -391,12 +397,17 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 		} else {
 			logger.Debugf("Sending video message %s to %v", msgText, chatIds)
 			var caption *mt.FormattedText
+			var thumbnail *mt.InputThumbnail
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
 				caption = mt.NewFormattedText(msgText, nil)
 			}
-			msg := mt.NewInputMessageVideo(mt.NewInputFileLocal(video.Path), nil, nil, 0,
+			if video.Thumbnail != nil && len(video.Thumbnail.Path) > 0{
+				thumbnail = mt.NewInputThumbnail(mt.NewInputFileLocal(video.Thumbnail.Path),
+					video.Thumbnail.Width, video.Thumbnail.Height)
+			}
+			msg := mt.NewInputMessageVideo(mt.NewInputFileLocal(video.Path), thumbnail, nil, 0,
 				video.Width, video.Height, video.Streaming, caption, 0)
 			videoSetter := func(id *mt.InputFileRemote) {
 				msg.Video = id
