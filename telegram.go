@@ -269,6 +269,7 @@ func (tg *Telegram) HandleUpdates() {
 				logger.Debugf("Got new update: %v", updateMsg.Message)
 				go tg.processCommand(updateMsg.Message)
 			}
+			close(msgReceiver.Chan)
 		} else {
 			logger.Error("Unable to get telegram update channel is nil")
 		}
@@ -291,6 +292,7 @@ func (tg *Telegram) HandleUpdates() {
 
 				}
 			}
+			close(fileUploadReceiver.Chan)
 		} else {
 			logger.Error("Unable to get telegram update channel is nil")
 		}
@@ -507,9 +509,12 @@ connect:
 }
 
 func (tg *Telegram) Close() {
-	tg.Close()
+	if _, err := tg.Client.Close(); err != nil{
+		logger.Error(err)
+	}
 	tg.Client.DestroyInstance()
 	tg.connected = false
+	close(tg.fileUploadChan)
 }
 
 func New(apiId, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
