@@ -54,12 +54,12 @@ const (
 	MtLogDebug
 	MtLogVerbose
 
-	cmdStart    = "start"
-	cmdAttach   = "attach"
-	cmdDetach   = "detach"
-	cmdSetAdmin = "setadmin"
-	cmdRmAdmin  = "rmadmin"
-	cmdState    = "state"
+	cmdStart    = "/start"
+	cmdAttach   = "/attach"
+	cmdDetach   = "/detach"
+	cmdSetAdmin = "/setadmin"
+	cmdRmAdmin  = "/rmadmin"
+	cmdState    = "/state"
 )
 
 type CFunc func(int64, string) error
