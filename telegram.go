@@ -196,7 +196,7 @@ func (tg *Telegram) stateF(chat int64, _, _ string) error {
 		err = errors.New("function State not defined")
 	} else {
 		var state string
-		if state, err = tg.BackendFunctions.State(chat); err != nil {
+		if state, err = tg.BackendFunctions.State(chat); err == nil {
 			tg.SendMsg(state, []int64{chat}, false)
 		}
 	}
