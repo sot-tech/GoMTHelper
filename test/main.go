@@ -63,15 +63,15 @@ func main() {
 			MTHelper.SetupMtLog("test/mt.log", MTHelper.MtLogWarning)
 			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
 			tg.Messages = conf.Msg
-			var authFunc func(input string) string
+			var authFunc func(input string) (string, error)
 			if len(args) > 1 && args[1] == "--auth" {
-				authFunc = func(input string) string {
+				authFunc = func(input string) (string, error) {
 					fmt.Println(input)
 					var res string
 					if _, err := fmt.Scanln(&res); err != nil {
-						logger.Error(err)
+						return "", err
 					}
-					return res
+					return res, nil
 				}
 			}
 			if err = tg.Login(authFunc, -1); err == nil {

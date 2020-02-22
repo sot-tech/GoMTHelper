@@ -62,7 +62,7 @@ const (
 	cmdState    = "/state"
 )
 
-type CFunc func(int64, string) error
+type CFunc func(int64, string, string) error
 
 type TGBackendFunction struct {
 	GetOffset  func() (int, error)
@@ -117,7 +117,7 @@ func SetupMtLog(path string, level int) {
 	mt.SetFilePath(path)
 }
 
-func (tg *Telegram) startF(chat int64, _ string) error {
+func (tg *Telegram) startF(chat int64, _, _ string) error {
 	var err error
 	var resp string
 	resp = tg.Messages.Commands.Start
@@ -125,7 +125,7 @@ func (tg *Telegram) startF(chat int64, _ string) error {
 	return err
 }
 
-func (tg *Telegram) attachF(chat int64, _ string) error {
+func (tg *Telegram) attachF(chat int64, _, _ string) error {
 	var err error
 	if tg.BackendFunctions.ChatAdd == nil {
 		err = errors.New("function ChatAdd not defined")
@@ -138,7 +138,7 @@ func (tg *Telegram) attachF(chat int64, _ string) error {
 	return err
 }
 
-func (tg *Telegram) detachF(chat int64, _ string) error {
+func (tg *Telegram) detachF(chat int64, _, _ string) error {
 	var err error
 	if tg.BackendFunctions.ChatRm == nil {
 		err = errors.New("function ChatRm not defined")
@@ -151,7 +151,7 @@ func (tg *Telegram) detachF(chat int64, _ string) error {
 	return err
 }
 
-func (tg *Telegram) setAdminF(chat int64, args string) error {
+func (tg *Telegram) setAdminF(chat int64, _, args string) error {
 	var err error
 	if tg.BackendFunctions.AdminAdd == nil {
 		err = errors.New("function AdminAdd not defined")
@@ -169,7 +169,7 @@ func (tg *Telegram) setAdminF(chat int64, args string) error {
 	return err
 }
 
-func (tg *Telegram) rmAdminF(chat int64, _ string) error {
+func (tg *Telegram) rmAdminF(chat int64, _, _ string) error {
 	var err error
 	if tg.BackendFunctions.AdminRm == nil || tg.BackendFunctions.AdminExist == nil {
 		err = errors.New("function AdminRm|AdminExist not defined")
@@ -190,7 +190,7 @@ func (tg *Telegram) rmAdminF(chat int64, _ string) error {
 	return err
 }
 
-func (tg *Telegram) stateF(chat int64, _ string) error {
+func (tg *Telegram) stateF(chat int64, _, _ string) error {
 	var err error
 	if tg.BackendFunctions.State == nil {
 		err = errors.New("function State not defined")
@@ -228,7 +228,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		if cmd == nil {
 			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
-		} else if err := cmd(chat, args); err != nil {
+		} else if err := cmd(chat, cmdStr, args); err != nil {
 			logger.Error(err)
 			tg.SendMsg(tg.Messages.Error+err.Error(), []int64{chat}, false)
 		}
@@ -245,6 +245,10 @@ func (tg *Telegram) AddCommand(cmd string, cmdFunc CFunc) error {
 	}
 	tg.Commands[cmd] = cmdFunc
 	return err
+}
+
+func (tg *Telegram) RmCommand(cmd string) {
+	delete(tg.Commands, cmd)
 }
 
 func (tg *Telegram) HandleUpdates() {
