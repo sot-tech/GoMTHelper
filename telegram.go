@@ -110,6 +110,7 @@ type Telegram struct {
 	connected        bool
 	fileUploadChan   chan string
 	fileUploadMutex  sync.Mutex
+	ownName          string
 }
 
 func SetupMtLog(path string, level int) {
@@ -224,7 +225,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		if len(words) > 1 {
 			args = words[1]
 		}
-		cmd := tg.Commands[cmdStr]
+		cmd := tg.Commands[strings.ReplaceAll(cmdStr, tg.ownName, "")]
 		if cmd == nil {
 			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
@@ -471,6 +472,7 @@ connect:
 				var me *mt.User
 				if me, err = tg.Client.GetMe(); err == nil {
 					tg.connected = true
+					tg.ownName = "@" + me.Username
 					tg.IsBot = me.Type.GetUserTypeEnum() == mt.UserTypeBotType
 					logger.Infof("Authorized as %s", me.Username)
 					if !tg.IsBot {
