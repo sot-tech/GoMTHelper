@@ -220,12 +220,22 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		words := strings.SplitN(content.Text.Text, " ", 2)
 		var cmdStr, args string
 		if len(words) > 0 {
-			cmdStr = words[0]
+			cmdStr = strings.ReplaceAll(words[0], tg.ownName, "")
 		}
 		if len(words) > 1 {
 			args = words[1]
 		}
-		cmd := tg.Commands[strings.ReplaceAll(cmdStr, tg.ownName, "")]
+		cmd := tg.Commands[cmdStr]
+		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
+			words = strings.SplitN(cmdStr, "_", 2)
+			if len(words) > 0{
+				cmdStr = words[0]
+			}
+			if len(words) > 1{
+				args = strings.TrimSpace(args + " " + words[1])
+			}
+			cmd = tg.Commands[cmdStr]
+		}
 		if cmd == nil {
 			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
