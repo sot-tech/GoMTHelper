@@ -30,7 +30,6 @@ import (
 	MTHelper "MTPHelper"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"github.com/op/go-logging"
 	"io/ioutil"
 	"os"
@@ -39,14 +38,15 @@ import (
 )
 
 type Config struct {
-	ApiId   string
-	ApiHash string
-	Otp     string
-	Chats   []int64
-	Text    string
-	Image   string
-	Video   string
-	Msg     MTHelper.TGMessages
+	ApiId    int32
+	ApiHash  string
+	BotToken string
+	Otp      string
+	Chats    []int64
+	Text     string
+	Image    string
+	Video    string
+	Msg      MTHelper.TGMessages
 }
 
 func main() {
@@ -60,22 +60,11 @@ func main() {
 	if err == nil {
 		conf := Config{}
 		if err = json.Unmarshal(confData, &conf); err == nil {
-			MTHelper.SetupMtLog("test/mt.log", MTHelper.MtLogWarning)
 			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
+			defer tg.Close()
 			tg.Messages = conf.Msg
-			var authFunc func(input string) (string, error)
-			if len(args) > 1 && args[1] == "--auth" {
-				authFunc = func(input string) (string, error) {
-					fmt.Println(input)
-					var res string
-					if _, err := fmt.Scanln(&res); err != nil {
-						return "", err
-					}
-					return res, nil
-				}
-			}
-			if err = tg.Login(authFunc, -1); err == nil {
-				tg.HandleUpdates()
+			if err = tg.LoginAsBot(conf.BotToken, MTHelper.MtLogDebug); err == nil {
+				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
 				tg.SendPhoto(MTHelper.MediaParams{
 					Path:   conf.Image,

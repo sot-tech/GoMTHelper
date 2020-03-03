@@ -29,8 +29,8 @@ package MTHelper
 import (
 	"errors"
 	"github.com/op/go-logging"
-	mt "github.com/Arman92/go-tdlib"
 	"github.com/xlzd/gotp"
+	mt "github.com/zelenin/go-tdlib/client"
 	"math"
 	"runtime"
 	"strings"
@@ -39,9 +39,8 @@ import (
 )
 
 const (
-	appVersion          = "0.195284w"
+	appVersion          = "0.275349w"
 	chatsPageNum  int32 = 100
-	updatesBuffer       = 50
 )
 
 var logger = logging.MustGetLogger("sot-te.ch/TGHelper")
@@ -104,18 +103,13 @@ type Telegram struct {
 	Messages         TGMessages
 	Commands         map[string]CFunc
 	BackendFunctions TGBackendFunction
+	mtParameters     mt.TdlibParameters
 	offset           int
 	totp             *gotp.TOTP
-	IsBot            bool
 	connected        bool
 	fileUploadChan   chan string
 	fileUploadMutex  sync.Mutex
 	ownName          string
-}
-
-func SetupMtLog(path string, level int) {
-	mt.SetLogVerbosityLevel(level)
-	mt.SetFilePath(path)
 }
 
 func (tg *Telegram) startF(chat int64, _, _ string) error {
@@ -214,7 +208,7 @@ func (tg *Telegram) setOffset(offset int) error {
 }
 
 func (tg *Telegram) processCommand(msg *mt.Message) {
-	chat := msg.ChatID
+	chat := msg.ChatId
 	content := msg.Content.(*mt.MessageText)
 	if content != nil && content.Text != nil {
 		words := strings.SplitN(content.Text.Text, " ", 2)
@@ -228,10 +222,10 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
 			words = strings.SplitN(cmdStr, "_", 2)
-			if len(words) > 0{
+			if len(words) > 0 {
 				cmdStr = words[0]
 			}
-			if len(words) > 1{
+			if len(words) > 1 {
 				args = strings.TrimSpace(args + " " + words[1])
 			}
 			cmd = tg.Commands[cmdStr]
@@ -263,56 +257,40 @@ func (tg *Telegram) RmCommand(cmd string) {
 }
 
 func (tg *Telegram) HandleUpdates() {
-	msgReceiver := tg.Client.AddEventReceiver(&mt.UpdateNewMessage{}, func(msg *mt.TdMessage) bool {
-		updateMsg := (*msg).(*mt.UpdateNewMessage)
-		if updateMsg != nil && updateMsg.Message != nil && !updateMsg.Message.IsOutgoing &&
-			updateMsg.Message.Content != nil && updateMsg.Message.Content.GetMessageContentEnum() == mt.MessageTextType {
-			content := updateMsg.Message.Content.(*mt.MessageText)
-			return content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/'
-		}
-		return false
-	}, updatesBuffer)
-	fileUploadReceiver := tg.Client.AddEventReceiver(&mt.UpdateFile{}, func(msg *mt.TdMessage) bool {
-		return true
-	}, updatesBuffer)
-	go func() {
-		if msgReceiver.Chan != nil {
-			for up := range msgReceiver.Chan {
-				if !tg.connected {
-					break
-				}
-				updateMsg := up.(*mt.UpdateNewMessage)
-				logger.Debugf("Got new update: %v", updateMsg.Message)
-				go tg.processCommand(updateMsg.Message)
+	if listener := tg.Client.GetListener(); listener != nil {
+		defer listener.Close()
+		for up := range listener.Updates {
+			if !tg.connected {
+				tg.fileUploadChan <- ""
+				break
 			}
-			close(msgReceiver.Chan)
-		} else {
-			logger.Error("Unable to get telegram update channel is nil")
-		}
-	}()
-	go func() {
-		if fileUploadReceiver.Chan != nil {
-			for up := range fileUploadReceiver.Chan {
-				if !tg.connected {
-					tg.fileUploadChan <- ""
-					break
-				}
-				updateMsg := up.(*mt.UpdateFile)
-				if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
-					if updateMsg.File.Remote.IsUploadingCompleted {
-						logger.Debug("File upload complete ", updateMsg.File.Remote.ID)
-						tg.fileUploadChan <- updateMsg.File.Remote.ID
-					} else{
-						logger.Debugf("File uploading %d/%d bytes", updateMsg.File.Remote.UploadedSize, updateMsg.File.Size)
+			if up != nil && up.GetClass() == mt.ClassUpdate {
+				switch up.GetType() {
+				case mt.TypeUpdateNewMessage:
+					upMsg := up.(*mt.UpdateNewMessage)
+					if msg := upMsg.Message; msg != nil && !msg.IsOutgoing && msg.Content != nil &&
+						msg.Content.MessageContentType() == mt.TypeMessageText {
+						content := upMsg.Message.Content.(*mt.MessageText)
+						if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
+							logger.Debug("Got new message:", upMsg.Message)
+							go tg.processCommand(upMsg.Message)
+						}
 					}
+				case mt.TypeUpdateFile:
+					updateMsg := up.(*mt.UpdateFile)
+					if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
+						if updateMsg.File.Remote.IsUploadingCompleted {
+							logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+							tg.fileUploadChan <- updateMsg.File.Remote.Id
+						} else {
+							logger.Debugf("File uploading %d/%d bytes", updateMsg.File.Remote.UploadedSize, updateMsg.File.Size)
+						}
 
+					}
 				}
 			}
-			close(fileUploadReceiver.Chan)
-		} else {
-			logger.Error("Unable to get telegram update channel is nil")
 		}
-	}()
+	}
 }
 
 func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
@@ -322,14 +300,21 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 		if formatted {
 			fMsg = FormatText(msgText)
 		} else {
-			fMsg = mt.NewFormattedText(msgText, nil)
+			fMsg = &mt.FormattedText{Text: msgText}
 		}
-		msg := mt.NewInputMessageText(fMsg, true, true)
+		msg := mt.InputMessageText{
+			Text:                  fMsg,
+			DisableWebPagePreview: true,
+			ClearDraft:            true,
+		}
 		for _, chatId := range chatIds {
-			if chat, err := tg.Client.GetChat(chatId); err == nil {
+			if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatId}); err == nil {
 				if chat != nil {
-					if _, err := tg.Client.SendMessage(chatId, 0, false,
-						false, nil, msg); err == nil {
+					req := &mt.SendMessageRequest{
+						ChatId:              chatId,
+						InputMessageContent: &msg,
+					}
+					if _, err := tg.Client.SendMessage(req); err == nil {
 						logger.Debugf("Message to %d has been sent", chatId)
 					} else {
 						logger.Error(err)
@@ -350,10 +335,13 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	uploadCnt := 0
 	var sentFileId string
 	for _, chatId := range chatIds {
-		if chat, err := tg.Client.GetChat(chatId); err == nil {
+		if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatId}); err == nil {
 			if chat != nil {
-				if _, err := tg.Client.SendMessage(chatId, 0, false,
-					false, nil, content); err == nil {
+				req := &mt.SendMessageRequest{
+					ChatId:              chatId,
+					InputMessageContent: content,
+				}
+				if _, err := tg.Client.SendMessage(req); err == nil {
 					// First upload as file, second as remote file id, next - as update message, so there's no updateFile event
 					if uploadCnt < 2 {
 						sentFileId = <-tg.fileUploadChan
@@ -363,7 +351,7 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 							logger.Warningf("Unable to get file Id")
 							break
 						}
-						idSetter(mt.NewInputFileRemote(sentFileId))
+						idSetter(&mt.InputFileRemote{Id: sentFileId})
 					}
 					uploadCnt++
 				} else {
@@ -388,14 +376,22 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
-				caption = mt.NewFormattedText(msgText, nil)
+				caption = &mt.FormattedText{Text: msgText}
 			}
-			if photo.Thumbnail != nil && len(photo.Thumbnail.Path) > 0{
-				thumbnail = mt.NewInputThumbnail(mt.NewInputFileLocal(photo.Thumbnail.Path),
-					photo.Thumbnail.Width, photo.Thumbnail.Height)
+			if photo.Thumbnail != nil && len(photo.Thumbnail.Path) > 0 {
+				thumbnail = &mt.InputThumbnail{
+					Thumbnail: &mt.InputFileLocal{Path: photo.Thumbnail.Path},
+					Width:     photo.Thumbnail.Width,
+					Height:    photo.Thumbnail.Height,
+				}
 			}
-			msg := mt.NewInputMessagePhoto(mt.NewInputFileLocal(photo.Path), thumbnail, nil, photo.Width,
-				photo.Height, caption, 0)
+			msg := &mt.InputMessagePhoto{
+				Photo:     &mt.InputFileLocal{Path: photo.Path},
+				Thumbnail: thumbnail,
+				Width:     photo.Width,
+				Height:    photo.Height,
+				Caption:   caption,
+			}
 			photoSetter := func(id *mt.InputFileRemote) {
 				msg.Photo = id
 			}
@@ -416,14 +412,23 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
-				caption = mt.NewFormattedText(msgText, nil)
+				caption = &mt.FormattedText{Text: msgText}
 			}
-			if video.Thumbnail != nil && len(video.Thumbnail.Path) > 0{
-				thumbnail = mt.NewInputThumbnail(mt.NewInputFileLocal(video.Thumbnail.Path),
-					video.Thumbnail.Width, video.Thumbnail.Height)
+			if video.Thumbnail != nil && len(video.Thumbnail.Path) > 0 {
+				thumbnail = &mt.InputThumbnail{
+					Thumbnail: &mt.InputFileLocal{Path: video.Thumbnail.Path},
+					Width:     video.Thumbnail.Width,
+					Height:    video.Thumbnail.Height,
+				}
 			}
-			msg := mt.NewInputMessageVideo(mt.NewInputFileLocal(video.Path), thumbnail, nil, 0,
-				video.Width, video.Height, video.Streaming, caption, 0)
+			msg := &mt.InputMessageVideo{
+				Video:             &mt.InputFileLocal{Path: video.Path},
+				Thumbnail:         thumbnail,
+				Width:             video.Width,
+				Height:            video.Height,
+				SupportsStreaming: video.Streaming,
+				Caption:           caption,
+			}
 			videoSetter := func(id *mt.InputFileRemote) {
 				msg.Video = id
 			}
@@ -434,19 +439,26 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 
 func (tg *Telegram) GetChats() ([]int64, error) {
 	var err error
+	cl := &mt.ChatListMain{}
 	allChats := make([]int64, 0, 50)
 	var chatIdOffset int64
-	offsetOrder := mt.JSONInt64(math.MaxInt64)
+	offsetOrder := mt.JsonInt64(math.MaxInt64)
 	for {
 		var chats *mt.Chats
-		if chats, err = tg.Client.GetChats(offsetOrder, chatIdOffset, chatsPageNum); err == nil {
-			if chats == nil || len(chats.ChatIDs) == 0 {
+		req := &mt.GetChatsRequest{
+			ChatList:     cl,
+			OffsetOrder:  offsetOrder,
+			OffsetChatId: chatIdOffset,
+			Limit:        chatsPageNum,
+		}
+		if chats, err = tg.Client.GetChats(req); err == nil {
+			if chats == nil || len(chats.ChatIds) == 0 {
 				break
 			}
-			allChats = append(allChats, chats.ChatIDs...)
+			allChats = append(allChats, chats.ChatIds...)
 			chatIdOffset = allChats[len(allChats)-1]
 			var chat *mt.Chat
-			if chat, err = tg.Client.GetChat(chatIdOffset); err == nil {
+			if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatIdOffset}); err == nil {
 				if chat != nil {
 					offsetOrder = chat.Order
 				}
@@ -462,125 +474,123 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 	return allChats, err
 }
 
-func (tg *Telegram) Connect(timeout int) error {
-	return tg.Login(nil, timeout)
+func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
+	var err error
+	auth := mt.BotAuthorizer(botToken)
+	auth.TdlibParameters <- &tg.mtParameters
+	logLevelRequest := mt.WithLogVerbosity(&mt.SetLogVerbosityLevelRequest{NewVerbosityLevel: logLevel})
+	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
+		var me *mt.User
+		if me, err = tg.Client.GetMe(); err == nil {
+			tg.connected = true
+			tg.ownName = "@" + me.Username
+			logger.Info("Authorized as", me.Username)
+		}
+	}
+	return err
 }
 
-func (tg *Telegram) Login(inputHandler func(string) (string, error), timeout int) error {
-	var err error
-connect:
-	for try := 0; try < timeout || timeout < 0; try++ {
-		var authState mt.AuthorizationState
-		if authState, err = tg.Client.Authorize(); err == nil {
-			stateEnum := authState.GetAuthorizationStateEnum()
-			switch stateEnum {
-			case mt.AuthorizationStateWaitEncryptionKeyType:
-				logger.Info(string(stateEnum))
-				time.Sleep(time.Second)
-				continue
-			case mt.AuthorizationStateReadyType:
-				var me *mt.User
-				if me, err = tg.Client.GetMe(); err == nil {
-					tg.connected = true
-					tg.ownName = "@" + me.Username
-					tg.IsBot = me.Type.GetUserTypeEnum() == mt.UserTypeBotType
-					logger.Infof("Authorized as %s", me.Username)
-					if !tg.IsBot {
-						if chats, err := tg.GetChats(); err == nil {
-							logger.Debugf("Reloaded chats: %v", chats)
-						}
-					}
+func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLevel int32) error {
+	var err, authErr error
+	auth := mt.ClientAuthorizer()
+	auth.TdlibParameters <- &tg.mtParameters
+	go func() {
+		for {
+			select {
+			case state, ok := <-auth.State:
+				if !ok {
+					return
 				}
-				break connect
-			case mt.AuthorizationStateClosedType, mt.AuthorizationStateClosingType, mt.AuthorizationStateLoggingOutType:
-				err = errors.New("connection closing " + string(stateEnum))
-				break connect
-			case mt.AuthorizationStateWaitTdlibParametersType:
-				err = errors.New("required parameters not set " + string(stateEnum))
-				break connect
-			case mt.AuthorizationStateWaitPhoneNumberType:
-				if inputHandler == nil {
-					err = errors.New("unauthorized")
-					break connect
-				} else {
-					var number string
-					if number, err = inputHandler(string(stateEnum)); err == nil {
-						if strings.IndexRune(number, ':') > 0 {
-							_, err = tg.Client.CheckAuthenticationBotToken(number)
-						} else {
-							_, err = tg.Client.SendPhoneNumber(number)
-						}
-					}
-					if err != nil {
-						break connect
-					}
+				stateType := state.AuthorizationStateType()
+				logger.Info(stateType)
+				var inputChan chan string
+				switch stateType {
+				case mt.TypeAuthorizationStateWaitEncryptionKey:
+					time.Sleep(time.Second)
+					continue
+				case mt.TypeAuthorizationStateClosed, mt.TypeAuthorizationStateClosing, mt.TypeAuthorizationStateLoggingOut:
+					authErr = errors.New("connection closing " + stateType)
+					return
+				case mt.TypeAuthorizationStateWaitTdlibParameters:
+					authErr = errors.New("required parameters not set " + stateType)
+					return
+				case mt.TypeAuthorizationStateWaitPhoneNumber:
+					inputChan = auth.PhoneNumber
+				case mt.TypeAuthorizationStateWaitCode:
+					inputChan = auth.Code
+				case mt.TypeAuthorizationStateWaitPassword:
+					inputChan = auth.Password
+				case mt.TypeAuthorizationStateReady:
+					return
 				}
-			case mt.AuthorizationStateWaitCodeType:
-				if inputHandler == nil {
-					err = errors.New("unauthorized")
-					break connect
+				if inputHandler != nil {
+					if val, err := inputHandler(stateType); err == nil {
+						inputChan <- val
+					} else {
+						authErr = err
+						return
+					}
 				} else {
-					var code string
-					if code, err = inputHandler(string(stateEnum)); err == nil {
-						_, err = tg.Client.SendAuthCode(code)
-					}
-					if err != nil {
-						break connect
-					}
-				}
-			case mt.AuthorizationStateWaitPasswordType:
-				if inputHandler == nil {
-					err = errors.New("unauthorized")
-					break connect
-				} else {
-					var password string
-					if password, err = inputHandler(string(stateEnum)); err == nil {
-						_, err = tg.Client.SendAuthPassword(password)
-					}
-					if err != nil {
-						break connect
-					}
+					authErr = errors.New("authorization handler not set")
+					return
 				}
 			}
+		}
+	}()
+	logLevelRequest := mt.WithLogVerbosity(&mt.SetLogVerbosityLevelRequest{NewVerbosityLevel: logLevel})
+	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
+		if authErr != nil {
+			err = authErr
 		} else {
-			break
+			var me *mt.User
+			if me, err = tg.Client.GetMe(); err == nil {
+				tg.connected = true
+				tg.ownName = "@" + me.Username
+				logger.Info("Authorized as", me.Username)
+				if _, err := tg.GetChats(); err != nil{
+					logger.Warning(err)
+				}
+			}
 		}
 	}
 	return err
 }
 
 func (tg *Telegram) Close() {
-	if _, err := tg.Client.Close(); err != nil{
+	if _, err := tg.Client.Close(); err != nil {
 		logger.Error(err)
 	}
-	tg.Client.DestroyInstance()
+	if _, err := tg.Client.Destroy(); err != nil {
+		logger.Error(err)
+	}
 	tg.connected = false
 	close(tg.fileUploadChan)
 }
 
-func New(apiId, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
-	tg := &Telegram{
-		Commands:       make(map[string]CFunc),
-		totp:           gotp.NewDefaultTOTP(otpSeed),
-		fileUploadChan: make(chan string),
-	}
-	tg.Client = mt.NewClient(mt.Config{
-		APIID:                  apiId,
-		APIHash:                apiHash,
-		SystemLanguageCode:     "en",
-		DeviceModel:            runtime.GOOS,
-		SystemVersion:          "n/d",
-		ApplicationVersion:     appVersion,
-		UseTestDataCenter:      false,
+func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
+	params := mt.TdlibParameters{
+		UseTestDc:              false,
 		DatabaseDirectory:      dbLocation,
-		FileDirectory:          filesLocation,
+		FilesDirectory:         filesLocation,
 		UseFileDatabase:        false,
 		UseChatInfoDatabase:    false,
 		UseMessageDatabase:     false,
 		UseSecretChats:         false,
+		ApiId:                  apiId,
+		ApiHash:                apiHash,
+		SystemLanguageCode:     "en",
+		DeviceModel:            runtime.GOOS,
+		SystemVersion:          "n/d",
+		ApplicationVersion:     appVersion,
 		EnableStorageOptimizer: true,
 		IgnoreFileNames:        false,
-	})
+	}
+	tg := &Telegram{
+		Commands:       make(map[string]CFunc),
+		mtParameters:   params,
+		totp:           gotp.NewDefaultTOTP(otpSeed),
+		fileUploadChan: make(chan string),
+	}
 	tg.BackendFunctions = TGBackendFunction{
 		GetOffset: tg.getOffset,
 		SetOffset: tg.setOffset,

@@ -29,28 +29,28 @@ import (
 	md "github.com/russross/blackfriday"
 	"unicode/utf8"
 )
-import mt "github.com/Arman92/go-tdlib"
+import mt "github.com/zelenin/go-tdlib/client"
 import "io"
 
 type TGRenderer struct{
 	index          int
-	entities       []mt.TextEntity
+	entities       []*mt.TextEntity
 	openedEntities map[md.NodeType]*mt.TextEntity
 }
 
 func NewRenderer() *TGRenderer{
 	return &TGRenderer{
-		entities:       make([]mt.TextEntity, 0, 10),
+		entities:       make([]*mt.TextEntity, 0, 10),
 		openedEntities: make(map[md.NodeType]*mt.TextEntity),
 	}
 }
 
-func (r *TGRenderer) GetEntities() []mt.TextEntity{
+func (r *TGRenderer) GetEntities() []*mt.TextEntity{
 	if r.openedEntities != nil {
 		for _, v := range r.openedEntities {
 			if v != nil {
 				v.Length = int32(r.index) - v.Offset
-				r.entities = append(r.entities, *v)
+				r.entities = append(r.entities, v)
 			}
 		}
 		r.openedEntities = make(map[md.NodeType]*mt.TextEntity)
@@ -63,36 +63,48 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 	l := utf8.RuneCountInString(s)
 	if entering {
 		var t mt.TextEntityType
-		var extra string
 		switch node.Type {
 		case md.Strong:
-			t = mt.NewTextEntityTypeBold()
+			t = &mt.TextEntityTypeBold{}
 		case md.Emph:
-			t = mt.NewTextEntityTypeItalic()
+			t = &mt.TextEntityTypeItalic{}
 		case md.Del:
-			t = nil //FIXME: Did not found any type for del
+			t = &mt.TextEntityTypeStrikethrough{}
 		case md.Link:
-			t = mt.NewTextEntityTypeTextURL(string(node.Destination))
+			t = &mt.TextEntityTypeTextUrl{Url: string(node.Destination)}
 		case md.Code:
-			r.entities = append(r.entities, *mt.NewTextEntity(int32(r.index), int32(l), mt.NewTextEntityTypeCode()))
+			e := &mt.TextEntity{
+				Offset: int32(r.index),
+				Length: int32(l),
+				Type:   &mt.TextEntityTypeCode{},
+			}
+			r.entities = append(r.entities, e)
 		case md.CodeBlock:
 			var codeBlockType mt.TextEntityType
 			if len(node.Info) > 0{
-				codeBlockType = mt.NewTextEntityTypePreCode(string(node.Info))
+				codeBlockType = &mt.TextEntityTypePreCode{Language: string(node.Info)}
 			} else{
-				codeBlockType = mt.NewTextEntityTypePre()
+				codeBlockType = &mt.TextEntityTypePre{}
 			}
-			r.entities = append(r.entities, *mt.NewTextEntity(int32(r.index), int32(l), codeBlockType))
+			e := &mt.TextEntity{
+				Offset: int32(r.index),
+				Length: int32(l),
+				Type:   codeBlockType,
+			}
+			r.entities = append(r.entities, e)
 		}
 		if t != nil{
-			ent := mt.NewTextEntity(int32(r.index), 0, t)
-			ent.Extra = extra
-			r.openedEntities[node.Type] = mt.NewTextEntity(int32(r.index), 0, t)
+			ent := &mt.TextEntity{
+				Offset: int32(r.index),
+				Length: 0,
+				Type:   t,
+			}
+			r.openedEntities[node.Type] = ent
 		}
 	} else{
 		if ent := r.openedEntities[node.Type]; ent != nil{
 			ent.Length = int32(r.index+ l) - ent.Offset
-			r.entities = append(r.entities, *ent)
+			r.entities = append(r.entities, ent)
 			r.openedEntities[node.Type] = nil
 		}
 	}
@@ -116,6 +128,9 @@ func (r *TGRenderer) RenderFooter(w io.Writer, node *md.Node){
 func FormatText(t string) *mt.FormattedText {
 	rnd := NewRenderer()
 	data := md.Run([]byte(t), md.WithRenderer(rnd))
-	out := mt.NewFormattedText(string(data), rnd.GetEntities())
-	return out
+	out := mt.FormattedText{
+		Text:     string(data),
+		Entities: rnd.GetEntities(),
+	}
+	return &out
 }
