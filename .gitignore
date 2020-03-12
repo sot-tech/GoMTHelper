@@ -1,5 +1,6 @@
 /test/*
 !/test/main.go
+!/test/example.json
 *.log
 /.idea
 /go.sum

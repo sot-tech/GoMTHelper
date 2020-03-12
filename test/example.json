@@ -1,0 +1,22 @@
+{
+	"apiId": 1234567,
+	"apiHash": "abcdef12345...",
+	"botToken": "1234:abCDef...",
+	"otp": "SOMELONGLONGBASE32STRING",
+	"chats": [123, -456],
+	"msg": {
+		"error": "Operation error: ",
+		"auth": "Unauthorized",
+		"cmds": {
+			"start": "TtKVC\nAvailable commands:\n/start - this help\n/attach [OTP] - subscribe\n/detach - unsubscribe\n/state - state of chat",
+			"attach": "Added to announce list",
+			"detach": "Removed from announce list",
+			"setadmin": "Access granted",
+			"rmadmin": "Access revoked",
+			"unknown": "Unknown command"
+		}
+	},
+	"text": "**Test** _formatted_ [message](http://localhost.localdomain)",
+	"image": "test/test.jpg",
+	"video": "test/test.mp4"
+}
