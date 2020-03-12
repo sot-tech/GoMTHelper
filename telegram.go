@@ -493,7 +493,6 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLevel int32) error {
 	var err, authErr error
 	auth := mt.ClientAuthorizer()
-	auth.TdlibParameters <- &tg.mtParameters
 	go func() {
 		for {
 			select {
@@ -512,8 +511,8 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 					authErr = errors.New("connection closing " + stateType)
 					return
 				case mt.TypeAuthorizationStateWaitTdlibParameters:
-					authErr = errors.New("required parameters not set " + stateType)
-					return
+					auth.TdlibParameters <- &tg.mtParameters
+					continue
 				case mt.TypeAuthorizationStateWaitPhoneNumber:
 					inputChan = auth.PhoneNumber
 				case mt.TypeAuthorizationStateWaitCode:

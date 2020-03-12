@@ -30,6 +30,7 @@ import (
 	MTHelper "MTPHelper"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/op/go-logging"
 	"io/ioutil"
 	"os"
@@ -63,7 +64,18 @@ func main() {
 			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
 			defer tg.Close()
 			tg.Messages = conf.Msg
-			if err = tg.LoginAsBot(conf.BotToken, MTHelper.MtLogDebug); err == nil {
+			if len(conf.BotToken) > 0{
+				err = tg.LoginAsBot(conf.BotToken, MTHelper.MtLogWarning)
+			} else{
+				err = tg.LoginAsUser(func(in string) (string, error) {
+					var err error
+					var out string
+					fmt.Println(in)
+					_, err = fmt.Scanln(&out)
+					return out, err
+				}, MTHelper.MtLogWarning)
+			}
+			if err == nil {
 				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
 				tg.SendPhoto(MTHelper.MediaParams{
@@ -85,9 +97,5 @@ func main() {
 	}
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		os.Exit(0)
-	}()
 	<-ch
 }
