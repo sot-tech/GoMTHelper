@@ -85,9 +85,5 @@ func main() {
 	}
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-ch
-		os.Exit(0)
-	}()
 	<-ch
 }
