@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	appVersion          = "0.275349w"
-	chatsPageNum  int32 = 100
+	appVersion         = "0.275349w"
+	chatsPageNum int32 = 100
 )
 
 var logger = logging.MustGetLogger("sot-te.ch/TGHelper")
@@ -259,6 +259,7 @@ func (tg *Telegram) RmCommand(cmd string) {
 func (tg *Telegram) HandleUpdates() {
 	if listener := tg.Client.GetListener(); listener != nil {
 		defer listener.Close()
+		var uploadStage uint8
 		for up := range listener.Updates {
 			if !tg.connected {
 				tg.fileUploadChan <- ""
@@ -280,8 +281,13 @@ func (tg *Telegram) HandleUpdates() {
 					updateMsg := up.(*mt.UpdateFile)
 					if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
 						if updateMsg.File.Remote.IsUploadingCompleted {
-							logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
-							tg.fileUploadChan <- updateMsg.File.Remote.Id
+							uploadStage++
+							// First upload as file, second as remote file id, next - as update message, so there's no updateFile event
+							if uploadStage%2 == 0 {
+								uploadStage = 0
+								tg.fileUploadChan <- updateMsg.File.Remote.Id
+								logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+							}
 						} else {
 							logger.Debugf("File uploading %d/%d bytes", updateMsg.File.Remote.UploadedSize, updateMsg.File.Size)
 						}
@@ -332,7 +338,6 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageContent, idSetter func(*mt.InputFileRemote)) {
 	tg.fileUploadMutex.Lock()
 	defer tg.fileUploadMutex.Unlock()
-	uploadCnt := 0
 	var sentFileId string
 	for _, chatId := range chatIds {
 		if chat, err := tg.GetChatTitle(chatId); err == nil {
@@ -342,19 +347,15 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 					InputMessageContent: content,
 				}
 				if _, err := tg.Client.SendMessage(req); err == nil {
-					// First upload as file, second as remote file id, next - as update message, so there's no updateFile event
-					if uploadCnt < 2 {
+					if len(sentFileId) == 0 {
 						sentFileId = <-tg.fileUploadChan
 					}
 					logger.Debugf("Media to %s has been sent", chat)
-					if uploadCnt == 0 {
-						if len(sentFileId) == 0 {
-							logger.Warningf("Unable to get file Id")
-							break
-						}
-						idSetter(&mt.InputFileRemote{Id: sentFileId})
+					if len(sentFileId) == 0 {
+						logger.Warningf("Unable to get file Id")
+						break
 					}
-					uploadCnt++
+					idSetter(&mt.InputFileRemote{Id: sentFileId})
 				} else {
 					logger.Error(err)
 				}
@@ -438,7 +439,7 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 	}
 }
 
-func (tg *Telegram) GetChatTitle(id int64) (string, error){
+func (tg *Telegram) GetChatTitle(id int64) (string, error) {
 	var err error
 	var name string
 	if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
@@ -556,7 +557,7 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 				tg.connected = true
 				tg.ownName = "@" + me.Username
 				logger.Info("Authorized as", me.Username)
-				if _, err := tg.GetChats(); err != nil{
+				if _, err := tg.GetChats(); err != nil {
 					logger.Warning(err)
 				}
 			}
