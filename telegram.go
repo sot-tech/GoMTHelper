@@ -172,9 +172,9 @@ func (tg *Telegram) rmAdminF(chat int64, _, _ string) error {
 		var exist bool
 		if exist, err = tg.BackendFunctions.AdminExist(chat); err == nil {
 			if exist {
-				if err = tg.BackendFunctions.AdminAdd(chat); err == nil {
+				if err = tg.BackendFunctions.AdminRm(chat); err == nil {
 					logger.Noticef("Admin deleted %d", chat)
-					tg.SendMsg(tg.Messages.Commands.SetAdmin, []int64{chat}, false)
+					tg.SendMsg(tg.Messages.Commands.RmAdmin, []int64{chat}, false)
 				}
 			} else {
 				logger.Infof("RmAdmin unauthorized %d", chat)
