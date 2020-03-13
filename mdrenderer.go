@@ -25,6 +25,7 @@
  */
 
 package MTHelper
+
 import (
 	md "github.com/russross/blackfriday"
 	"unicode/utf8"
@@ -32,20 +33,20 @@ import (
 import mt "github.com/zelenin/go-tdlib/client"
 import "io"
 
-type TGRenderer struct{
+type TGRenderer struct {
 	index          int
 	entities       []*mt.TextEntity
 	openedEntities map[md.NodeType]*mt.TextEntity
 }
 
-func NewRenderer() *TGRenderer{
+func NewRenderer() *TGRenderer {
 	return &TGRenderer{
 		entities:       make([]*mt.TextEntity, 0, 10),
 		openedEntities: make(map[md.NodeType]*mt.TextEntity),
 	}
 }
 
-func (r *TGRenderer) GetEntities() []*mt.TextEntity{
+func (r *TGRenderer) GetEntities() []*mt.TextEntity {
 	if r.openedEntities != nil {
 		for _, v := range r.openedEntities {
 			if v != nil {
@@ -58,9 +59,16 @@ func (r *TGRenderer) GetEntities() []*mt.TextEntity{
 	return r.entities
 }
 
-func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.WalkStatus{
+func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.WalkStatus {
 	s := string(node.Literal)
-	l := utf8.RuneCountInString(s)
+	l := 0
+	for _, c := range []rune(s) {
+		if utf8.RuneLen(c) < 4 {
+			l++
+		} else {
+			l += 2 //fix for extended unicode (i.e. emoji)
+		}
+	}
 	if entering {
 		var t mt.TextEntityType
 		switch node.Type {
@@ -81,9 +89,9 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			r.entities = append(r.entities, e)
 		case md.CodeBlock:
 			var codeBlockType mt.TextEntityType
-			if len(node.Info) > 0{
+			if len(node.Info) > 0 {
 				codeBlockType = &mt.TextEntityTypePreCode{Language: string(node.Info)}
-			} else{
+			} else {
 				codeBlockType = &mt.TextEntityTypePre{}
 			}
 			e := &mt.TextEntity{
@@ -93,7 +101,7 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			}
 			r.entities = append(r.entities, e)
 		}
-		if t != nil{
+		if t != nil {
 			ent := &mt.TextEntity{
 				Offset: int32(r.index),
 				Length: 0,
@@ -101,27 +109,27 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			}
 			r.openedEntities[node.Type] = ent
 		}
-	} else{
-		if ent := r.openedEntities[node.Type]; ent != nil{
-			ent.Length = int32(r.index+ l) - ent.Offset
+	} else {
+		if ent := r.openedEntities[node.Type]; ent != nil {
+			ent.Length = int32(r.index+l) - ent.Offset
 			r.entities = append(r.entities, ent)
 			r.openedEntities[node.Type] = nil
 		}
 	}
 
 	r.index += l
-	if _, err := w.Write(node.Literal); err == nil{
+	if _, err := w.Write(node.Literal); err == nil {
 		return md.GoToNext
 	} else {
 		return md.Terminate
 	}
 }
 
-func (r *TGRenderer) RenderHeader(w io.Writer, node *md.Node){
+func (r *TGRenderer) RenderHeader(w io.Writer, node *md.Node) {
 	_, _ = w.Write(node.Literal)
 }
 
-func (r *TGRenderer) RenderFooter(w io.Writer, node *md.Node){
+func (r *TGRenderer) RenderFooter(w io.Writer, node *md.Node) {
 	_, _ = w.Write(node.Literal)
 }
 
