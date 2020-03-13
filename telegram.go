@@ -308,14 +308,14 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 			ClearDraft:            true,
 		}
 		for _, chatId := range chatIds {
-			if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatId}); err == nil {
-				if chat != nil {
+			if chat, err := tg.GetChatTitle(chatId); err == nil {
+				if len(chat) > 0 {
 					req := &mt.SendMessageRequest{
 						ChatId:              chatId,
 						InputMessageContent: &msg,
 					}
 					if _, err := tg.Client.SendMessage(req); err == nil {
-						logger.Debugf("Message to %d has been sent", chatId)
+						logger.Debugf("Message to %s has been sent", chat)
 					} else {
 						logger.Error(err)
 					}
@@ -335,8 +335,8 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	uploadCnt := 0
 	var sentFileId string
 	for _, chatId := range chatIds {
-		if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatId}); err == nil {
-			if chat != nil {
+		if chat, err := tg.GetChatTitle(chatId); err == nil {
+			if len(chat) > 0 {
 				req := &mt.SendMessageRequest{
 					ChatId:              chatId,
 					InputMessageContent: content,
@@ -346,6 +346,7 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 					if uploadCnt < 2 {
 						sentFileId = <-tg.fileUploadChan
 					}
+					logger.Debugf("Media to %s has been sent", chat)
 					if uploadCnt == 0 {
 						if len(sentFileId) == 0 {
 							logger.Warningf("Unable to get file Id")
@@ -435,6 +436,15 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			tg.sendMediaMessage(chatIds, msg, videoSetter)
 		}
 	}
+}
+
+func (tg *Telegram) GetChatTitle(id int64) (string, error){
+	var err error
+	var name string
+	if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
+		name = chat.Title
+	}
+	return name, err
 }
 
 func (tg *Telegram) GetChats() ([]int64, error) {
