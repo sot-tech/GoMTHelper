@@ -219,6 +219,13 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		if len(words) > 1 {
 			args = words[1]
 		}
+		if strings.ContainsRune(cmdStr, '@') {
+			words := strings.SplitN(cmdStr, "@", 2)
+			if words[1] != tg.ownName{
+				return
+			}
+			cmdStr = words[0]
+		}
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
 			words = strings.SplitN(cmdStr, "_", 2)
