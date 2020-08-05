@@ -151,7 +151,7 @@ func (tg *Telegram) setAdminF(chat int64, _, args string) error {
 	if tg.BackendFunctions.AdminAdd == nil {
 		err = errors.New("function AdminAdd not defined")
 	} else {
-		if tg.totp.Verify(args, int(time.Now().Unix())) {
+		if tg.ValidateOTP(args) {
 			if err = tg.BackendFunctions.AdminAdd(chat); err == nil {
 				logger.Noticef("New admin added %d", chat)
 				tg.SendMsg(tg.Messages.Commands.SetAdmin, []int64{chat}, false)
@@ -246,6 +246,16 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		}
 	}
 
+}
+
+func (tg *Telegram) ValidateOTP(otp string) bool {
+	var res bool
+	if tg.totp != nil{
+		res = tg.totp.Verify(otp, int(time.Now().Unix()))
+	} else{
+		logger.Warning("TOTP not initialised")
+	}
+	return res
 }
 
 func (tg *Telegram) AddCommand(cmd string, cmdFunc CFunc) error {
@@ -604,10 +614,16 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		EnableStorageOptimizer: true,
 		IgnoreFileNames:        false,
 	}
+	var totp *gotp.TOTP
+	if len(otpSeed) > 0{
+		totp = gotp.NewDefaultTOTP(otpSeed)
+	} else{
+		logger.Warning("OTP seed not set, TOTP won't check passwords")
+	}
 	tg := &Telegram{
 		Commands:       make(map[string]CFunc),
 		mtParameters:   params,
-		totp:           gotp.NewDefaultTOTP(otpSeed),
+		totp:           totp,
 		fileUploadChan: make(chan string, 100),
 	}
 	tg.BackendFunctions = TGBackendFunction{
