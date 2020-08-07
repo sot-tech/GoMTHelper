@@ -214,17 +214,17 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		words := strings.SplitN(content.Text.Text, " ", 2)
 		var cmdStr, args string
 		if len(words) > 0 {
-			cmdStr = strings.ReplaceAll(words[0], tg.ownName, "")
+			cmdStr = words[0]
 		}
 		if len(words) > 1 {
 			args = words[1]
 		}
 		if strings.ContainsRune(cmdStr, '@') {
-			words := strings.SplitN(cmdStr, "@", 2)
-			if words[1] != tg.ownName{
+			cmdWords := strings.SplitN(cmdStr, "@", 2)
+			if cmdWords[1] != tg.ownName{
 				return
 			}
-			cmdStr = words[0]
+			cmdStr = cmdWords[0]
 		}
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
@@ -513,7 +513,7 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 		var me *mt.User
 		if me, err = tg.Client.GetMe(); err == nil {
 			tg.connected = true
-			tg.ownName = "@" + me.Username
+			tg.ownName = me.Username
 			logger.Info("Authorized as", me.Username)
 		}
 	}
@@ -574,7 +574,7 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 			var me *mt.User
 			if me, err = tg.Client.GetMe(); err == nil {
 				tg.connected = true
-				tg.ownName = "@" + me.Username
+				tg.ownName = me.Username
 				logger.Info("Authorized as", me.Username)
 				if _, err := tg.GetChats(); err != nil {
 					logger.Warning(err)
