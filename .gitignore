@@ -3,4 +3,4 @@
 !/test/example.json
 *.log
 /.idea
-/go.sum
+
