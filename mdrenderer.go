@@ -1,6 +1,6 @@
 /*
  * BSD-3-Clause
- * Copyright 2020 sot (PR_713, C_rho_272)
+ * Copyright 2021 sot (PR_713, C_rho_272)
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
  * 1. Redistributions of source code must retain the above copyright notice,
@@ -27,7 +27,7 @@
 package MTHelper
 
 import (
-	md "github.com/russross/blackfriday"
+	md "github.com/russross/blackfriday/v2"
 	"unicode/utf8"
 )
 import mt "github.com/zelenin/go-tdlib/client"
@@ -80,6 +80,9 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			t = &mt.TextEntityTypeStrikethrough{}
 		case md.Link:
 			t = &mt.TextEntityTypeTextUrl{Url: string(node.Destination)}
+		case md.Hardbreak:
+			node.Literal = []byte{'\n'}
+			l++
 		case md.Code:
 			e := &mt.TextEntity{
 				Offset: int32(r.index),
@@ -110,9 +113,14 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			r.openedEntities[node.Type] = ent
 		}
 	} else {
-		if ent := r.openedEntities[node.Type]; ent != nil {
+		if node.Type == md.Paragraph {
+			node.Literal = []byte{'\n','\n'}
+			l+=2
+		}else if ent := r.openedEntities[node.Type]; ent != nil {
 			ent.Length = int32(r.index+l) - ent.Offset
-			r.entities = append(r.entities, ent)
+			if ent.Length > 0 {
+				r.entities = append(r.entities, ent)
+			}
 			r.openedEntities[node.Type] = nil
 		}
 	}
@@ -135,7 +143,7 @@ func (r *TGRenderer) RenderFooter(w io.Writer, node *md.Node) {
 
 func FormatText(t string) *mt.FormattedText {
 	rnd := NewRenderer()
-	data := md.Run([]byte(t), md.WithRenderer(rnd))
+	data := md.Run([]byte(t), md.WithRenderer(rnd), md.WithExtensions(md.HardLineBreak))
 	out := mt.FormattedText{
 		Text:     string(data),
 		Entities: rnd.GetEntities(),

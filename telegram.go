@@ -1,6 +1,6 @@
 /*
  * BSD-3-Clause
- * Copyright 2020 sot (PR_713, C_rho_272)
+ * Copyright 2021 sot (PR_713, C_rho_272)
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
  * 1. Redistributions of source code must retain the above copyright notice,
@@ -28,6 +28,7 @@ package MTHelper
 
 import (
 	"errors"
+	"fmt"
 	"github.com/op/go-logging"
 	"github.com/xlzd/gotp"
 	mt "github.com/zelenin/go-tdlib/client"
@@ -278,7 +279,6 @@ func (tg *Telegram) HandleUpdates() {
 		defer listener.Close()
 		for up := range listener.Updates {
 			if !tg.connected {
-				tg.fileUploadChan <- ""
 				break
 			}
 			if up != nil && up.GetClass() == mt.ClassUpdate {
@@ -490,7 +490,13 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 			var chat *mt.Chat
 			if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatIdOffset}); err == nil {
 				if chat != nil {
-					offsetOrder = chat.Order
+					if len(chat.Positions) > 0 {
+						offsetOrder = chat.Positions[0].Order
+					} else{
+						err = errors.New(fmt.Sprint("no positions specified for chat ", chatIdOffset))
+						allChats = nil
+						break
+					}
 				}
 			} else {
 				allChats = nil

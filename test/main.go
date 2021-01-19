@@ -27,7 +27,6 @@
 package main
 
 import (
-	MTHelper "MTPHelper"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -35,6 +34,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/signal"
+	"sot-te.ch/MTHelper"
 	"syscall"
 )
 
@@ -76,19 +76,20 @@ func main() {
 				}, MTHelper.MtLogWarning)
 			}
 			if err == nil {
+				_, _ = tg.GetChats()
 				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
-				tg.SendPhoto(MTHelper.MediaParams{
-					Path:   conf.Image,
-					Width:  0,
-					Height: 0,
-				}, conf.Text, conf.Chats, true)
-				tg.SendVideo(MTHelper.MediaParams{
-					Path:      conf.Video,
-					Width:     0,
-					Height:    0,
-					Streaming: true,
-				}, conf.Text, conf.Chats, true)
+				//tg.SendPhoto(MTHelper.MediaParams{
+				//	Path:   conf.Image,
+				//	Width:  0,
+				//	Height: 0,
+				//}, conf.Text, conf.Chats, true)
+				//tg.SendVideo(MTHelper.MediaParams{
+				//	Path:      conf.Video,
+				//	Width:     0,
+				//	Height:    0,
+				//	Streaming: true,
+				//}, conf.Text, conf.Chats, true)
 			}
 		}
 	}
