@@ -592,14 +592,19 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 }
 
 func (tg *Telegram) Close() {
-	if _, err := tg.Client.Close(); err != nil {
-		logger.Error(err)
+	if tg.connected {
+		if _, err := tg.Client.Close(); err != nil {
+			logger.Error(err)
+		}
+		if _, err := tg.Client.Destroy(); err != nil {
+			logger.Error(err)
+		}
+		tg.connected = false
 	}
-	if _, err := tg.Client.Destroy(); err != nil {
-		logger.Error(err)
+	if tg.fileUploadChan != nil {
+		close(tg.fileUploadChan)
+		tg.fileUploadChan = nil
 	}
-	tg.connected = false
-	close(tg.fileUploadChan)
 }
 
 func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
