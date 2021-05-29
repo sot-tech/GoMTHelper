@@ -33,6 +33,7 @@ import (
 	"github.com/xlzd/gotp"
 	mt "github.com/zelenin/go-tdlib/client"
 	"math"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -108,7 +109,7 @@ type Telegram struct {
 	offset           int
 	totp             *gotp.TOTP
 	connected        bool
-	fileUploadChan   chan string
+	fileUploadChan   map[string] chan string
 	fileUploadMutex  sync.Mutex
 	ownName          string
 }
@@ -222,7 +223,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		}
 		if strings.ContainsRune(cmdStr, '@') {
 			cmdWords := strings.SplitN(cmdStr, "@", 2)
-			if cmdWords[1] != tg.ownName{
+			if cmdWords[1] != tg.ownName {
 				return
 			}
 			cmdStr = cmdWords[0]
@@ -251,9 +252,9 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 
 func (tg *Telegram) ValidateOTP(otp string) bool {
 	var res bool
-	if tg.totp != nil{
+	if tg.totp != nil {
 		res = tg.totp.Verify(otp, int(time.Now().Unix()))
-	} else{
+	} else {
 		logger.Warning("TOTP not initialised")
 	}
 	return res
@@ -297,14 +298,28 @@ func (tg *Telegram) HandleUpdates() {
 					updateMsg := up.(*mt.UpdateFile)
 					if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
 						if updateMsg.File.Remote.IsUploadingCompleted {
-							tg.fileUploadChan <- updateMsg.File.Remote.Id
 							logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+							if updateMsg.File.Local != nil {
+								if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
+									if fileChan := tg.fileUploadChan[absPath]; fileChan != nil {
+										fileChan <- updateMsg.File.Remote.Id
+										tg.fileUploadMutex.Lock()
+										delete(tg.fileUploadChan, absPath)
+										tg.fileUploadMutex.Unlock()
+									} else {
+										logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
+									}
+								} else{
+									logger.Error(err)
+								}
+							} else{
+								logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
+							}
 						} else {
 							logger.Debugf("File uploading %d/%d bytes",
 								updateMsg.File.Remote.UploadedSize,
 								updateMsg.File.Size)
 						}
-
 					}
 				}
 			}
@@ -348,14 +363,23 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 	}
 }
 
-func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageContent, idSetter func(*mt.InputFileRemote)) {
-	tg.fileUploadMutex.Lock()
-	defer tg.fileUploadMutex.Unlock()
+func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageContent, idSetter func(*mt.InputFileRemote), fileToWatch string) {
 	var sentFileId string
-	for len(tg.fileUploadChan) > 0 {
-		logger.Debug("Clean file upload channel, left ", len(tg.fileUploadChan))
-		<-tg.fileUploadChan
+	upChan := make(chan string)
+	tg.fileUploadMutex.Lock()
+	if tg.fileUploadChan == nil {
+		logger.Warning("File upload channels closed")
+		tg.fileUploadMutex.Unlock()
+		return
+	} else {
+		if absPath, err := filepath.Abs(fileToWatch); err == nil {
+			logger.Debug("Setting file watch for ", absPath)
+			tg.fileUploadChan[absPath] = upChan
+		} else{
+			logger.Error(err)
+		}
 	}
+	tg.fileUploadMutex.Unlock()
 	for _, chatId := range chatIds {
 		if chat, err := tg.GetChatTitle(chatId); err == nil {
 			if len(chat) > 0 {
@@ -365,16 +389,16 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 				}
 				if _, err := tg.Client.SendMessage(req); err == nil {
 					if len(sentFileId) == 0 {
-						logger.Debug("Waiting for file upload")
-						sentFileId = <-tg.fileUploadChan
-						logger.Info("Got image id ", sentFileId)
+						logger.Debug("Waiting for upload ", fileToWatch)
+						sentFileId = <-upChan
+						if len(sentFileId) == 0 {
+							logger.Warningf("Unable to get file Id")
+							break
+						} else {
+							logger.Info("Got file ", fileToWatch, " id ", sentFileId)
+							idSetter(&mt.InputFileRemote{Id: sentFileId})
+						}
 					}
-					logger.Debugf("Media to %s has been sent", chat)
-					if len(sentFileId) == 0 {
-						logger.Warningf("Unable to get file Id")
-						break
-					}
-					idSetter(&mt.InputFileRemote{Id: sentFileId})
 				} else {
 					logger.Error(err)
 				}
@@ -416,7 +440,7 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 			photoSetter := func(id *mt.InputFileRemote) {
 				msg.Photo = id
 			}
-			tg.sendMediaMessage(chatIds, msg, photoSetter)
+			tg.sendMediaMessage(chatIds, msg, photoSetter, photo.Path)
 		}
 	}
 }
@@ -453,7 +477,7 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			videoSetter := func(id *mt.InputFileRemote) {
 				msg.Video = id
 			}
-			tg.sendMediaMessage(chatIds, msg, videoSetter)
+			tg.sendMediaMessage(chatIds, msg, videoSetter, video.Path)
 		}
 	}
 }
@@ -492,7 +516,7 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 				if chat != nil {
 					if len(chat.Positions) > 0 {
 						offsetOrder = chat.Positions[0].Order
-					} else{
+					} else {
 						err = errors.New(fmt.Sprint("no positions specified for chat ", chatIdOffset))
 						allChats = nil
 						break
@@ -602,7 +626,13 @@ func (tg *Telegram) Close() {
 		tg.connected = false
 	}
 	if tg.fileUploadChan != nil {
-		close(tg.fileUploadChan)
+		tg.fileUploadMutex.Lock()
+		defer tg.fileUploadMutex.Unlock()
+		for _, ch := range tg.fileUploadChan {
+			if ch != nil {
+				close(ch)
+			}
+		}
 		tg.fileUploadChan = nil
 	}
 }
@@ -626,16 +656,16 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		IgnoreFileNames:        false,
 	}
 	var totp *gotp.TOTP
-	if len(otpSeed) > 0{
+	if len(otpSeed) > 0 {
 		totp = gotp.NewDefaultTOTP(otpSeed)
-	} else{
+	} else {
 		logger.Warning("OTP seed not set, TOTP won't check passwords")
 	}
 	tg := &Telegram{
 		Commands:       make(map[string]CFunc),
 		mtParameters:   params,
 		totp:           totp,
-		fileUploadChan: make(chan string, 100),
+		fileUploadChan: make(map[string]chan string),
 	}
 	tg.BackendFunctions = TGBackendFunction{
 		GetOffset: tg.getOffset,
