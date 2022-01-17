@@ -28,7 +28,6 @@ package MTHelper
 
 import (
 	"errors"
-	"fmt"
 	"github.com/op/go-logging"
 	"github.com/xlzd/gotp"
 	mt "github.com/zelenin/go-tdlib/client"
@@ -42,10 +41,10 @@ import (
 
 const (
 	appVersion         = "0.275349w"
-	chatsPageNum int32 = 100
+	chatsPageNum int32 = math.MaxInt32
 )
 
-var logger = logging.MustGetLogger("sot-te.ch/TGHelper")
+var logger = logging.MustGetLogger("sot-te.ch/MTHelper")
 
 const (
 	MtLogFatal = iota
@@ -66,8 +65,6 @@ const (
 type CFunc func(int64, string, string) error
 
 type TGBackendFunction struct {
-	GetOffset  func() (int, error)
-	SetOffset  func(int) error
 	ChatExist  func(int64) (bool, error)
 	ChatAdd    func(int64) error
 	ChatRm     func(int64) error
@@ -109,7 +106,7 @@ type Telegram struct {
 	offset           int
 	totp             *gotp.TOTP
 	connected        bool
-	fileUploadChan   map[string] chan string
+	fileUploadChan   map[string]chan string
 	fileUploadMutex  sync.Mutex
 	ownName          string
 }
@@ -198,15 +195,6 @@ func (tg *Telegram) stateF(chat int64, _, _ string) error {
 		}
 	}
 	return err
-}
-
-func (tg *Telegram) getOffset() (int, error) {
-	return tg.offset, nil
-}
-
-func (tg *Telegram) setOffset(offset int) error {
-	tg.offset = offset
-	return nil
 }
 
 func (tg *Telegram) processCommand(msg *mt.Message) {
@@ -309,10 +297,10 @@ func (tg *Telegram) HandleUpdates() {
 									} else {
 										logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
 									}
-								} else{
+								} else {
 									logger.Error(err)
 								}
-							} else{
+							} else {
 								logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
 							}
 						} else {
@@ -375,7 +363,7 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 		if absPath, err := filepath.Abs(fileToWatch); err == nil {
 			logger.Debug("Setting file watch for ", absPath)
 			tg.fileUploadChan[absPath] = upChan
-		} else{
+		} else {
 			logger.Error(err)
 		}
 	}
@@ -495,41 +483,15 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 	var err error
 	cl := &mt.ChatListMain{}
 	allChats := make([]int64, 0, 50)
-	var chatIdOffset int64
-	offsetOrder := mt.JsonInt64(math.MaxInt64)
-	for {
-		var chats *mt.Chats
-		req := &mt.GetChatsRequest{
-			ChatList:     cl,
-			OffsetOrder:  offsetOrder,
-			OffsetChatId: chatIdOffset,
-			Limit:        chatsPageNum,
-		}
-		if chats, err = tg.Client.GetChats(req); err == nil {
-			if chats == nil || len(chats.ChatIds) == 0 {
-				break
-			}
-			allChats = append(allChats, chats.ChatIds...)
-			chatIdOffset = allChats[len(allChats)-1]
-			var chat *mt.Chat
-			if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: chatIdOffset}); err == nil {
-				if chat != nil {
-					if len(chat.Positions) > 0 {
-						offsetOrder = chat.Positions[0].Order
-					} else {
-						err = errors.New(fmt.Sprint("no positions specified for chat ", chatIdOffset))
-						allChats = nil
-						break
-					}
-				}
-			} else {
-				allChats = nil
-				break
-			}
-		} else {
-			allChats = nil
-			break
-		}
+	var chats *mt.Chats
+	req := &mt.GetChatsRequest{
+		ChatList: cl,
+		Limit:    chatsPageNum,
+	}
+	if chats, err = tg.Client.GetChats(req); err == nil && chats != nil && len(chats.ChatIds) > 0 {
+		allChats = append(allChats, chats.ChatIds...)
+	} else {
+		allChats = nil
 	}
 	return allChats, err
 }
@@ -618,11 +580,9 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 func (tg *Telegram) Close() {
 	if tg.connected {
 		if _, err := tg.Client.Close(); err != nil {
-			logger.Error(err)
+			logger.Warning(err)
 		}
-		if _, err := tg.Client.Destroy(); err != nil {
-			logger.Error(err)
-		}
+		_, _ = tg.Client.Destroy()
 		tg.connected = false
 	}
 	if tg.fileUploadChan != nil {
@@ -666,10 +626,6 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		mtParameters:   params,
 		totp:           totp,
 		fileUploadChan: make(map[string]chan string),
-	}
-	tg.BackendFunctions = TGBackendFunction{
-		GetOffset: tg.getOffset,
-		SetOffset: tg.setOffset,
 	}
 	_ = tg.AddCommand(cmdStart, tg.startF)
 	_ = tg.AddCommand(cmdAttach, tg.attachF)

@@ -64,9 +64,10 @@ func main() {
 			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
 			defer tg.Close()
 			tg.Messages = conf.Msg
-			if len(conf.BotToken) > 0{
+
+			if len(conf.BotToken) > 0 {
 				err = tg.LoginAsBot(conf.BotToken, MTHelper.MtLogWarning)
-			} else{
+			} else {
 				err = tg.LoginAsUser(func(in string) (string, error) {
 					var err error
 					var out string
@@ -76,7 +77,8 @@ func main() {
 				}, MTHelper.MtLogWarning)
 			}
 			if err == nil {
-				_, _ = tg.GetChats()
+				chats, _ := tg.GetChats()
+				logger.Info(chats)
 				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
 				tg.SendPhoto(MTHelper.MediaParams{
