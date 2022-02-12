@@ -8,3 +8,5 @@ github.com/xlzd/gotp v0.0.0-20220110052318-fab697c03c2c h1:LZpKQbMSngtN4ycCtogkx
 github.com/xlzd/gotp v0.0.0-20220110052318-fab697c03c2c/go.mod h1:ndLJ3JKzi3xLmUProq4LLxCuECL93dG9WASNLpHz8qg=
 github.com/zelenin/go-tdlib v0.5.2 h1:inEATEM0Pz6/HBI3wTlhd+brDHpmoXGgwdSb8/V6GiA=
 github.com/zelenin/go-tdlib v0.5.2/go.mod h1:Xs8fXbk5n7VaPyrSs9DP7QYoBScWYsjX+lUcWmx1DIU=
+github.com/zelenin/go-tdlib v0.6.0 h1:dmdaPYcluNPiVuagM7D2FPT/nLYftTmqeKndz30vSDM=
+github.com/zelenin/go-tdlib v0.6.0/go.mod h1:Xs8fXbk5n7VaPyrSs9DP7QYoBScWYsjX+lUcWmx1DIU=
