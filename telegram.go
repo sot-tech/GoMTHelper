@@ -60,9 +60,11 @@ const (
 	cmdSetAdmin = "/setadmin"
 	cmdRmAdmin  = "/rmadmin"
 	cmdState    = "/state"
+
+	cmdMaxLen = 1000
 )
 
-type CFunc func(int64, string, string) error
+type CommandFunc func(chatId int64, cmd string, args []string) error
 
 type TGBackendFunction struct {
 	ChatExist  func(int64) (bool, error)
@@ -100,7 +102,7 @@ type MediaParams struct {
 type Telegram struct {
 	Client           *mt.Client
 	Messages         TGMessages
-	Commands         map[string]CFunc
+	Commands         map[string]CommandFunc
 	BackendFunctions TGBackendFunction
 	mtParameters     mt.TdlibParameters
 	offset           int
@@ -111,7 +113,7 @@ type Telegram struct {
 	ownName          string
 }
 
-func (tg *Telegram) startF(chat int64, _, _ string) error {
+func (tg *Telegram) startF(chat int64, _ string, _ []string) error {
 	var err error
 	var resp string
 	resp = tg.Messages.Commands.Start
@@ -119,7 +121,7 @@ func (tg *Telegram) startF(chat int64, _, _ string) error {
 	return err
 }
 
-func (tg *Telegram) attachF(chat int64, _, _ string) error {
+func (tg *Telegram) attachF(chat int64, _ string, _ []string) error {
 	var err error
 	if tg.BackendFunctions.ChatAdd == nil {
 		err = errors.New("function ChatAdd not defined")
@@ -132,7 +134,7 @@ func (tg *Telegram) attachF(chat int64, _, _ string) error {
 	return err
 }
 
-func (tg *Telegram) detachF(chat int64, _, _ string) error {
+func (tg *Telegram) detachF(chat int64, _ string, _ []string) error {
 	var err error
 	if tg.BackendFunctions.ChatRm == nil {
 		err = errors.New("function ChatRm not defined")
@@ -145,12 +147,12 @@ func (tg *Telegram) detachF(chat int64, _, _ string) error {
 	return err
 }
 
-func (tg *Telegram) setAdminF(chat int64, _, args string) error {
+func (tg *Telegram) setAdminF(chat int64, _ string, args []string) error {
 	var err error
 	if tg.BackendFunctions.AdminAdd == nil {
 		err = errors.New("function AdminAdd not defined")
 	} else {
-		if tg.ValidateOTP(args) {
+		if tg.ValidateOTP(args[0]) {
 			if err = tg.BackendFunctions.AdminAdd(chat); err == nil {
 				logger.Noticef("New admin added %d", chat)
 				tg.SendMsg(tg.Messages.Commands.SetAdmin, []int64{chat}, false)
@@ -163,7 +165,7 @@ func (tg *Telegram) setAdminF(chat int64, _, args string) error {
 	return err
 }
 
-func (tg *Telegram) rmAdminF(chat int64, _, _ string) error {
+func (tg *Telegram) rmAdminF(chat int64, _ string, _ []string) error {
 	var err error
 	if tg.BackendFunctions.AdminRm == nil || tg.BackendFunctions.AdminExist == nil {
 		err = errors.New("function AdminRm|AdminExist not defined")
@@ -184,7 +186,7 @@ func (tg *Telegram) rmAdminF(chat int64, _, _ string) error {
 	return err
 }
 
-func (tg *Telegram) stateF(chat int64, _, _ string) error {
+func (tg *Telegram) stateF(chat int64, _ string, _ []string) error {
 	var err error
 	if tg.BackendFunctions.State == nil {
 		err = errors.New("function State not defined")
@@ -200,14 +202,15 @@ func (tg *Telegram) stateF(chat int64, _, _ string) error {
 func (tg *Telegram) processCommand(msg *mt.Message) {
 	chat := msg.ChatId
 	content := msg.Content.(*mt.MessageText)
-	if content != nil && content.Text != nil {
-		words := strings.SplitN(content.Text.Text, " ", 2)
-		var cmdStr, args string
+	if content != nil && content.Text != nil && len(content.Text.Text) <= cmdMaxLen {
+		words := strings.Split(content.Text.Text, " ")
+		var cmdStr string
+		args := make([]string, 0)
 		if len(words) > 0 {
 			cmdStr = words[0]
 		}
 		if len(words) > 1 {
-			args = words[1]
+			args = append(args, words[1:]...)
 		}
 		if strings.ContainsRune(cmdStr, '@') {
 			cmdWords := strings.SplitN(cmdStr, "@", 2)
@@ -218,21 +221,34 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		}
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
-			words = strings.SplitN(cmdStr, "_", 2)
+			words = strings.Split(cmdStr, "_")
 			if len(words) > 0 {
 				cmdStr = words[0]
 			}
 			if len(words) > 1 {
-				args = strings.TrimSpace(args + " " + words[1])
+				args = append(args, words[1:]...)
 			}
 			cmd = tg.Commands[cmdStr]
 		}
 		if cmd == nil {
 			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
-		} else if err := cmd(chat, cmdStr, args); err != nil {
-			logger.Error(err)
-			tg.SendMsg(tg.Messages.Error+err.Error(), []int64{chat}, false)
+		} else {
+			l := len(args)
+			if l > 0 {
+				sanitizedArgs := make([]string, 0, l)
+				for _, a := range args {
+					a = strings.TrimSpace(a)
+					if len(a) > 0 {
+						sanitizedArgs = append(sanitizedArgs, a)
+					}
+				}
+				args = sanitizedArgs
+			}
+			if err := cmd(chat, cmdStr, args); err != nil {
+				logger.Error(err)
+				tg.SendMsg(tg.Messages.Error+err.Error(), []int64{chat}, false)
+			}
 		}
 	}
 
@@ -248,12 +264,12 @@ func (tg *Telegram) ValidateOTP(otp string) bool {
 	return res
 }
 
-func (tg *Telegram) AddCommand(cmd string, cmdFunc CFunc) error {
+func (tg *Telegram) AddCommand(cmd string, cmdFunc CommandFunc) error {
 	var err error
 	if cmd == "" || cmdFunc == nil {
 		err = errors.New("unable to add empty command")
 	} else if tg.Commands == nil {
-		tg.Commands = make(map[string]CFunc)
+		tg.Commands = make(map[string]CommandFunc)
 	}
 	tg.Commands[cmd] = cmdFunc
 	return err
@@ -622,7 +638,7 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		logger.Warning("OTP seed not set, TOTP won't check passwords")
 	}
 	tg := &Telegram{
-		Commands:       make(map[string]CFunc),
+		Commands:       make(map[string]CommandFunc),
 		mtParameters:   params,
 		totp:           totp,
 		fileUploadChan: make(map[string]chan string),
