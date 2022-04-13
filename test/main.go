@@ -30,12 +30,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/op/go-logging"
 	"io/ioutil"
 	"os"
 	"os/signal"
-	"sot-te.ch/MTHelper"
 	"syscall"
+
+	"github.com/op/go-logging"
+
+	"sot-te.ch/MTHelper"
 )
 
 type Config struct {

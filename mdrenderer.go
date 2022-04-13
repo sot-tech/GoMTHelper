@@ -27,11 +27,12 @@
 package MTHelper
 
 import (
-	md "github.com/russross/blackfriday/v2"
+	"io"
 	"unicode/utf8"
+
+	md "github.com/russross/blackfriday/v2"
+	mt "github.com/zelenin/go-tdlib/client"
 )
-import mt "github.com/zelenin/go-tdlib/client"
-import "io"
 
 type TGRenderer struct {
 	index          int
@@ -62,11 +63,11 @@ func (r *TGRenderer) GetEntities() []*mt.TextEntity {
 func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.WalkStatus {
 	s := string(node.Literal)
 	l := 0
-	for _, c := range []rune(s) {
+	for _, c := range s {
 		if utf8.RuneLen(c) < 4 {
 			l++
 		} else {
-			l += 2 //fix for extended unicode (i.e. emoji)
+			l += 2 // fix for extended unicode (i.e. emoji)
 		}
 	}
 	if entering {
@@ -114,9 +115,9 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 		}
 	} else {
 		if node.Type == md.Paragraph {
-			node.Literal = []byte{'\n','\n'}
-			l+=2
-		}else if ent := r.openedEntities[node.Type]; ent != nil {
+			node.Literal = []byte{'\n', '\n'}
+			l += 2
+		} else if ent := r.openedEntities[node.Type]; ent != nil {
 			ent.Length = int32(r.index+l) - ent.Offset
 			if ent.Length > 0 {
 				r.entities = append(r.entities, ent)

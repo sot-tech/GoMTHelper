@@ -28,15 +28,16 @@ package MTHelper
 
 import (
 	"errors"
-	"github.com/op/go-logging"
-	"github.com/xlzd/gotp"
-	mt "github.com/zelenin/go-tdlib/client"
 	"math"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/op/go-logging"
+	"github.com/xlzd/gotp"
+	mt "github.com/zelenin/go-tdlib/client"
 )
 
 const (
@@ -105,7 +106,6 @@ type Telegram struct {
 	Commands         map[string]CommandFunc
 	BackendFunctions TGBackendFunction
 	mtParameters     mt.TdlibParameters
-	offset           int
 	totp             *gotp.TOTP
 	connected        bool
 	fileUploadChan   map[string]chan string
@@ -114,11 +114,9 @@ type Telegram struct {
 }
 
 func (tg *Telegram) startF(chat int64, _ string, _ []string) error {
-	var err error
-	var resp string
-	resp = tg.Messages.Commands.Start
+	resp := tg.Messages.Commands.Start
 	tg.SendMsg(resp, []int64{chat}, false)
-	return err
+	return nil
 }
 
 func (tg *Telegram) attachF(chat int64, _ string, _ []string) error {
@@ -532,45 +530,42 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 	var err, authErr error
 	auth := mt.ClientAuthorizer()
 	go func() {
-		for {
-			select {
-			case state, ok := <-auth.State:
-				if !ok {
-					return
-				}
-				stateType := state.AuthorizationStateType()
-				logger.Info(stateType)
-				var inputChan chan string
-				switch stateType {
-				case mt.TypeAuthorizationStateWaitEncryptionKey:
-					time.Sleep(time.Second)
-					continue
-				case mt.TypeAuthorizationStateClosed, mt.TypeAuthorizationStateClosing, mt.TypeAuthorizationStateLoggingOut:
-					authErr = errors.New("connection closing " + stateType)
-					return
-				case mt.TypeAuthorizationStateWaitTdlibParameters:
-					auth.TdlibParameters <- &tg.mtParameters
-					continue
-				case mt.TypeAuthorizationStateWaitPhoneNumber:
-					inputChan = auth.PhoneNumber
-				case mt.TypeAuthorizationStateWaitCode:
-					inputChan = auth.Code
-				case mt.TypeAuthorizationStateWaitPassword:
-					inputChan = auth.Password
-				case mt.TypeAuthorizationStateReady:
-					return
-				}
-				if inputHandler != nil {
-					if val, err := inputHandler(stateType); err == nil {
-						inputChan <- val
-					} else {
-						authErr = err
-						return
-					}
+		for state := range auth.State {
+			if state == nil {
+				return
+			}
+			stateType := state.AuthorizationStateType()
+			logger.Info(stateType)
+			var inputChan chan string
+			switch stateType {
+			case mt.TypeAuthorizationStateWaitEncryptionKey:
+				time.Sleep(time.Second)
+				continue
+			case mt.TypeAuthorizationStateClosed, mt.TypeAuthorizationStateClosing, mt.TypeAuthorizationStateLoggingOut:
+				authErr = errors.New("connection closing " + stateType)
+				return
+			case mt.TypeAuthorizationStateWaitTdlibParameters:
+				auth.TdlibParameters <- &tg.mtParameters
+				continue
+			case mt.TypeAuthorizationStateWaitPhoneNumber:
+				inputChan = auth.PhoneNumber
+			case mt.TypeAuthorizationStateWaitCode:
+				inputChan = auth.Code
+			case mt.TypeAuthorizationStateWaitPassword:
+				inputChan = auth.Password
+			case mt.TypeAuthorizationStateReady:
+				return
+			}
+			if inputHandler != nil {
+				if val, err := inputHandler(stateType); err == nil {
+					inputChan <- val
 				} else {
-					authErr = errors.New("authorization handler not set")
+					authErr = err
 					return
 				}
+			} else {
+				authErr = errors.New("authorization handler not set")
+				return
 			}
 		}
 	}()
