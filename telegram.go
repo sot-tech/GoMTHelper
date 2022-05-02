@@ -332,6 +332,7 @@ func (tg *Telegram) HandleUpdates() {
 func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 	if msgText != "" && len(chatIds) > 0 {
 		logger.Debugf("Sending message %s to %v", msgText, chatIds)
+		var err error
 		var fMsg *mt.FormattedText
 		if formatted {
 			fMsg = FormatText(msgText)
@@ -344,21 +345,17 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 			ClearDraft:            true,
 		}
 		for _, chatId := range chatIds {
-			if chat, err := tg.GetChatTitle(chatId); err == nil {
-				if len(chat) > 0 {
-					req := &mt.SendMessageRequest{
-						ChatId:              chatId,
-						InputMessageContent: &msg,
-					}
-					if _, err := tg.Client.SendMessage(req); err == nil {
-						logger.Debugf("Message to %s has been sent", chat)
-					} else {
-						logger.Error(err)
-					}
-				} else {
-					logger.Errorf("Chat %d not found", chatId)
+			var chat string
+			if chat, err = tg.GetChatTitle(chatId); err == nil {
+				req := &mt.SendMessageRequest{
+					ChatId:              chatId,
+					InputMessageContent: &msg,
 				}
-			} else {
+				if _, err = tg.Client.SendMessage(req); err == nil {
+					logger.Debugf("Message to %s has been sent", chat)
+				}
+			}
+			if err != nil {
 				logger.Error(err)
 			}
 		}
@@ -382,31 +379,29 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 		}
 	}
 	tg.fileUploadMutex.Unlock()
+	var err error
 	for _, chatId := range chatIds {
-		if chat, err := tg.GetChatTitle(chatId); err == nil {
-			if len(chat) > 0 {
-				req := &mt.SendMessageRequest{
-					ChatId:              chatId,
-					InputMessageContent: content,
-				}
-				if _, err := tg.Client.SendMessage(req); err == nil {
-					if len(sentFileId) == 0 {
-						logger.Debug("Waiting for upload ", fileToWatch)
-						sentFileId = <-upChan
-						if len(sentFileId) == 0 {
-							logger.Warningf("Unable to get file Id")
-							break
-						} else {
-							logger.Info("Got file ", fileToWatch, " id ", sentFileId)
-							idSetter(&mt.InputFileRemote{Id: sentFileId})
-						}
-					}
-				} else {
-					logger.Error(err)
-				}
-			} else {
-				logger.Errorf("Chat %d not found", chatId)
+		if _, err = tg.GetChatTitle(chatId); err == nil {
+			req := &mt.SendMessageRequest{
+				ChatId:              chatId,
+				InputMessageContent: content,
 			}
+			if _, err = tg.Client.SendMessage(req); err == nil {
+				if len(sentFileId) == 0 {
+					logger.Debug("Waiting for upload ", fileToWatch)
+					sentFileId = <-upChan
+					if len(sentFileId) == 0 {
+						logger.Warningf("Unable to get file Id")
+						break
+					} else {
+						logger.Info("Got file ", fileToWatch, " id ", sentFileId)
+						idSetter(&mt.InputFileRemote{Id: sentFileId})
+					}
+				}
+			}
+		}
+		if err != nil {
+			logger.Error(err)
 		}
 	}
 }
@@ -484,10 +479,9 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 	}
 }
 
-func (tg *Telegram) GetChatTitle(id int64) (string, error) {
-	var err error
-	var name string
-	if chat, err := tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
+func (tg *Telegram) GetChatTitle(id int64) (name string, err error) {
+	var chat *mt.Chat
+	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
 		name = chat.Title
 	}
 	return name, err
@@ -495,12 +489,10 @@ func (tg *Telegram) GetChatTitle(id int64) (string, error) {
 
 func (tg *Telegram) GetChats() ([]int64, error) {
 	var err error
-	cl := &mt.ChatListMain{}
 	allChats := make([]int64, 0, 50)
 	var chats *mt.Chats
 	req := &mt.GetChatsRequest{
-		ChatList: cl,
-		Limit:    chatsPageNum,
+		Limit: chatsPageNum,
 	}
 	if chats, err = tg.Client.GetChats(req); err == nil && chats != nil && len(chats.ChatIds) > 0 {
 		allChats = append(allChats, chats.ChatIds...)
