@@ -513,6 +513,9 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 			tg.connected = true
 			tg.ownName = me.Username
 			logger.Info("Authorized as", me.Username)
+			if _, err := tg.GetChats(); err != nil {
+				logger.Warning(err)
+			}
 		}
 	}
 	return err
