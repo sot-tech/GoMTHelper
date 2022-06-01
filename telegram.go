@@ -31,6 +31,7 @@ import (
 	"math"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -347,13 +348,15 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 		for _, chatId := range chatIds {
 			var chat string
 			if chat, err = tg.GetChatTitle(chatId); err == nil {
-				req := &mt.SendMessageRequest{
-					ChatId:              chatId,
-					InputMessageContent: &msg,
-				}
-				if _, err = tg.Client.SendMessage(req); err == nil {
-					logger.Debugf("Message to %s has been sent", chat)
-				}
+				logger.Warning(err)
+				chat = strconv.FormatInt(chatId, 10)
+			}
+			req := &mt.SendMessageRequest{
+				ChatId:              chatId,
+				InputMessageContent: &msg,
+			}
+			if _, err = tg.Client.SendMessage(req); err == nil {
+				logger.Debugf("Message to %s has been sent", chat)
 			}
 			if err != nil {
 				logger.Error(err)
@@ -381,22 +384,23 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	tg.fileUploadMutex.Unlock()
 	var err error
 	for _, chatId := range chatIds {
-		if _, err = tg.GetChatTitle(chatId); err == nil {
-			req := &mt.SendMessageRequest{
-				ChatId:              chatId,
-				InputMessageContent: content,
-			}
-			if _, err = tg.Client.SendMessage(req); err == nil {
+		if _, err = tg.GetChatTitle(chatId); err != nil {
+			logger.Warning(err)
+		}
+		req := &mt.SendMessageRequest{
+			ChatId:              chatId,
+			InputMessageContent: content,
+		}
+		if _, err = tg.Client.SendMessage(req); err == nil {
+			if len(sentFileId) == 0 {
+				logger.Debug("Waiting for upload ", fileToWatch)
+				sentFileId = <-upChan
 				if len(sentFileId) == 0 {
-					logger.Debug("Waiting for upload ", fileToWatch)
-					sentFileId = <-upChan
-					if len(sentFileId) == 0 {
-						logger.Warningf("Unable to get file Id")
-						break
-					} else {
-						logger.Info("Got file ", fileToWatch, " id ", sentFileId)
-						idSetter(&mt.InputFileRemote{Id: sentFileId})
-					}
+					logger.Warningf("Unable to get file Id")
+					break
+				} else {
+					logger.Info("Got file ", fileToWatch, " id ", sentFileId)
+					idSetter(&mt.InputFileRemote{Id: sentFileId})
 				}
 			}
 		}
@@ -483,6 +487,11 @@ func (tg *Telegram) GetChatTitle(id int64) (name string, err error) {
 	var chat *mt.Chat
 	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
 		name = chat.Title
+	} else {
+		var user *mt.User
+		if user, err = tg.Client.GetUser(&mt.GetUserRequest{UserId: id}); err == nil {
+			name = user.Username
+		}
 	}
 	return name, err
 }
@@ -513,9 +522,6 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 			tg.connected = true
 			tg.ownName = me.Username
 			logger.Info("Authorized as", me.Username)
-			if _, err := tg.GetChats(); err != nil {
-				logger.Warning(err)
-			}
 		}
 	}
 	return err
