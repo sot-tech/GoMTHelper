@@ -108,9 +108,10 @@ type Telegram struct {
 	BackendFunctions TGBackendFunction
 	mtParameters     mt.TdlibParameters
 	totp             *gotp.TOTP
-	connected        bool
 	fileUploadChan   map[string]chan string
 	fileUploadMutex  sync.Mutex
+	listener         *mt.Listener
+	closeChan        chan bool
 	ownName          string
 }
 
@@ -279,49 +280,54 @@ func (tg *Telegram) RmCommand(cmd string) {
 }
 
 func (tg *Telegram) HandleUpdates() {
-	if listener := tg.Client.GetListener(); listener != nil {
-		defer listener.Close()
-		for up := range listener.Updates {
-			if !tg.connected {
-				break
-			}
-			if up != nil && up.GetClass() == mt.ClassUpdate {
-				switch up.GetType() {
-				case mt.TypeUpdateNewMessage:
-					upMsg := up.(*mt.UpdateNewMessage)
-					if msg := upMsg.Message; msg != nil && !msg.IsOutgoing && msg.Content != nil &&
-						msg.Content.MessageContentType() == mt.TypeMessageText {
-						content := upMsg.Message.Content.(*mt.MessageText)
-						if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
-							logger.Debug("Got new message:", upMsg.Message)
-							go tg.processCommand(upMsg.Message)
+	if tg.listener == nil {
+		if tg.listener = tg.Client.GetListener(); tg.listener != nil {
+			defer tg.listener.Close()
+			for up := range tg.listener.Updates {
+				if up != nil && up.GetClass() == mt.ClassUpdate {
+					switch up.GetType() {
+					case mt.TypeUpdateNewMessage:
+						upMsg := up.(*mt.UpdateNewMessage)
+						if msg := upMsg.Message; msg != nil && !msg.IsOutgoing && msg.Content != nil &&
+							msg.Content.MessageContentType() == mt.TypeMessageText {
+							content := upMsg.Message.Content.(*mt.MessageText)
+							if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
+								logger.Debug("Got new message:", upMsg.Message)
+								go tg.processCommand(upMsg.Message)
+							}
 						}
-					}
-				case mt.TypeUpdateFile:
-					updateMsg := up.(*mt.UpdateFile)
-					if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
-						if updateMsg.File.Remote.IsUploadingCompleted {
-							logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
-							if updateMsg.File.Local != nil {
-								if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
-									if fileChan := tg.fileUploadChan[absPath]; fileChan != nil {
-										fileChan <- updateMsg.File.Remote.Id
-										tg.fileUploadMutex.Lock()
-										delete(tg.fileUploadChan, absPath)
-										tg.fileUploadMutex.Unlock()
+					case mt.TypeUpdateFile:
+						updateMsg := up.(*mt.UpdateFile)
+						if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
+							if updateMsg.File.Remote.IsUploadingCompleted {
+								logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+								if updateMsg.File.Local != nil {
+									if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
+										if fileChan := tg.fileUploadChan[absPath]; fileChan != nil {
+											fileChan <- updateMsg.File.Remote.Id
+											tg.fileUploadMutex.Lock()
+											delete(tg.fileUploadChan, absPath)
+											tg.fileUploadMutex.Unlock()
+										} else {
+											logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
+										}
 									} else {
-										logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
+										logger.Error(err)
 									}
 								} else {
-									logger.Error(err)
+									logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
 								}
 							} else {
-								logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
+								logger.Debugf("File uploading %d/%d bytes",
+									updateMsg.File.Remote.UploadedSize,
+									updateMsg.File.Size)
 							}
-						} else {
-							logger.Debugf("File uploading %d/%d bytes",
-								updateMsg.File.Remote.UploadedSize,
-								updateMsg.File.Size)
+						}
+					case mt.TypeUpdateAuthorizationState:
+						upState := up.(*mt.UpdateAuthorizationState)
+						if upState.AuthorizationState.AuthorizationStateType() == mt.TypeAuthorizationStateClosed {
+							close(tg.closeChan)
+							return
 						}
 					}
 				}
@@ -332,7 +338,7 @@ func (tg *Telegram) HandleUpdates() {
 
 func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 	if msgText != "" && len(chatIds) > 0 {
-		logger.Debugf("Sending message %s to %v", msgText, chatIds)
+		logger.Debug("Sending message ", msgText, " to ", chatIds)
 		var err error
 		var fMsg *mt.FormattedText
 		if formatted {
@@ -346,17 +352,18 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 			ClearDraft:            true,
 		}
 		for _, chatId := range chatIds {
-			var chat string
-			if chat, err = tg.GetChatTitle(chatId); err == nil {
+			var title string
+			if title, err = tg.GetChatTitle(chatId); err != nil {
 				logger.Warning(err)
-				chat = strconv.FormatInt(chatId, 10)
+				title = strconv.FormatInt(chatId, 10)
 			}
+			logger.Debug("Sending message to ", title, " id ", chatId)
 			req := &mt.SendMessageRequest{
 				ChatId:              chatId,
 				InputMessageContent: &msg,
 			}
 			if _, err = tg.Client.SendMessage(req); err == nil {
-				logger.Debugf("Message to %s has been sent", chat)
+				logger.Debug("Message to ", title, " has been sent")
 			}
 			if err != nil {
 				logger.Error(err)
@@ -384,9 +391,12 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	tg.fileUploadMutex.Unlock()
 	var err error
 	for _, chatId := range chatIds {
-		if _, err = tg.GetChatTitle(chatId); err != nil {
+		var title string
+		if title, err = tg.GetChatTitle(chatId); err != nil {
 			logger.Warning(err)
+			title = strconv.FormatInt(chatId, 10)
 		}
+		logger.Debug("Sending message to ", title, " id ", chatId)
 		req := &mt.SendMessageRequest{
 			ChatId:              chatId,
 			InputMessageContent: content,
@@ -396,7 +406,7 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 				logger.Debug("Waiting for upload ", fileToWatch)
 				sentFileId = <-upChan
 				if len(sentFileId) == 0 {
-					logger.Warningf("Unable to get file Id")
+					logger.Warning("Unable to get file Id")
 					break
 				} else {
 					logger.Info("Got file ", fileToWatch, " id ", sentFileId)
@@ -416,7 +426,7 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 			logger.Warning("Photo is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			logger.Debugf("Sending photo message %s to %v", msgText, chatIds)
+			logger.Debugf("Sending photo message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -452,7 +462,7 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			logger.Warning("Video is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			logger.Debugf("Sending video message %s to %v", msgText, chatIds)
+			logger.Debugf("Sending video message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -488,25 +498,31 @@ func (tg *Telegram) GetChatTitle(id int64) (name string, err error) {
 	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
 		name = chat.Title
 	} else {
+		logger.Warning(err)
 		var user *mt.User
 		if user, err = tg.Client.GetUser(&mt.GetUserRequest{UserId: id}); err == nil {
 			name = user.Username
 		}
 	}
-	return name, err
+	return
 }
 
 func (tg *Telegram) GetChats() ([]int64, error) {
 	var err error
 	allChats := make([]int64, 0, 50)
 	var chats *mt.Chats
-	req := &mt.GetChatsRequest{
+	loadReq := &mt.LoadChatsRequest{
 		Limit: chatsPageNum,
 	}
-	if chats, err = tg.Client.GetChats(req); err == nil && chats != nil && len(chats.ChatIds) > 0 {
-		allChats = append(allChats, chats.ChatIds...)
-	} else {
-		allChats = nil
+	if _, err = tg.Client.LoadChats(loadReq); err == nil {
+		getReq := &mt.GetChatsRequest{
+			Limit: chatsPageNum,
+		}
+		if chats, err = tg.Client.GetChats(getReq); err == nil && chats != nil {
+			allChats = append(allChats, chats.ChatIds...)
+		} else {
+			allChats = nil
+		}
 	}
 	return allChats, err
 }
@@ -519,7 +535,7 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
 		var me *mt.User
 		if me, err = tg.Client.GetMe(); err == nil {
-			tg.connected = true
+			tg.closeChan = make(chan bool)
 			tg.ownName = me.Username
 			logger.Info("Authorized as", me.Username)
 		}
@@ -577,7 +593,7 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 		} else {
 			var me *mt.User
 			if me, err = tg.Client.GetMe(); err == nil {
-				tg.connected = true
+				tg.closeChan = make(chan bool)
 				tg.ownName = me.Username
 				logger.Info("Authorized as", me.Username)
 				if _, err := tg.GetChats(); err != nil {
@@ -590,12 +606,14 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 }
 
 func (tg *Telegram) Close() {
-	if tg.connected {
-		if _, err := tg.Client.Close(); err != nil {
+	if tg.closeChan != nil {
+		if _, err := tg.Client.Close(); err == nil {
+			tg.HandleUpdates()
+			<-tg.closeChan
+			tg.closeChan = nil
+		} else {
 			logger.Warning(err)
 		}
-		_, _ = tg.Client.Destroy()
-		tg.connected = false
 	}
 	if tg.fileUploadChan != nil {
 		tg.fileUploadMutex.Lock()
