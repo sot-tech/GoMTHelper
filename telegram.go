@@ -633,7 +633,7 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		DatabaseDirectory:      dbLocation,
 		FilesDirectory:         filesLocation,
 		UseFileDatabase:        false,
-		UseChatInfoDatabase:    false,
+		UseChatInfoDatabase:    true,
 		UseMessageDatabase:     false,
 		UseSecretChats:         false,
 		ApiId:                  apiId,
@@ -642,7 +642,7 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		DeviceModel:            runtime.GOOS,
 		SystemVersion:          "n/d",
 		ApplicationVersion:     appVersion,
-		EnableStorageOptimizer: true,
+		EnableStorageOptimizer: false,
 		IgnoreFileNames:        false,
 	}
 	var totp *gotp.TOTP
