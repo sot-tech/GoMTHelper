@@ -633,7 +633,7 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 		DatabaseDirectory:      dbLocation,
 		FilesDirectory:         filesLocation,
 		UseFileDatabase:        false,
-		UseChatInfoDatabase:    true,
+		UseChatInfoDatabase:    false,
 		UseMessageDatabase:     false,
 		UseSecretChats:         false,
 		ApiId:                  apiId,
