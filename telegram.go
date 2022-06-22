@@ -46,7 +46,7 @@ const (
 	chatsPageNum int32 = math.MaxInt32
 )
 
-var logger = logging.MustGetLogger("sot-te.ch/MTHelper")
+var defaultLogger = logging.MustGetLogger("sot-te.ch/MTHelper")
 
 const (
 	MtLogFatal = iota
@@ -65,6 +65,32 @@ const (
 
 	cmdMaxLen = 1000
 )
+
+type TgLogger interface {
+	Fatal(args ...interface{})
+	Fatalf(format string, args ...interface{})
+
+	Panic(args ...interface{})
+	Panicf(format string, args ...interface{})
+
+	Critical(args ...interface{})
+	Criticalf(format string, args ...interface{})
+
+	Error(args ...interface{})
+	Errorf(format string, args ...interface{})
+
+	Warning(args ...interface{})
+	Warningf(format string, args ...interface{})
+
+	Notice(args ...interface{})
+	Noticef(format string, args ...interface{})
+
+	Info(args ...interface{})
+	Infof(format string, args ...interface{})
+
+	Debug(args ...interface{})
+	Debugf(format string, args ...interface{})
+}
 
 type CommandFunc func(chatId int64, cmd string, args []string) error
 
@@ -113,6 +139,7 @@ type Telegram struct {
 	listener         *mt.Listener
 	closeChan        chan bool
 	ownName          string
+	logger           TgLogger
 }
 
 func (tg *Telegram) startF(chat int64, _ string, _ []string) error {
@@ -127,7 +154,7 @@ func (tg *Telegram) attachF(chat int64, _ string, _ []string) error {
 		err = errors.New("function ChatAdd not defined")
 	} else {
 		if err = tg.BackendFunctions.ChatAdd(chat); err == nil {
-			logger.Noticef("New chat added %d", chat)
+			tg.logger.Noticef("New chat added %d", chat)
 			tg.SendMsg(tg.Messages.Commands.Attach, []int64{chat}, false)
 		}
 	}
@@ -140,7 +167,7 @@ func (tg *Telegram) detachF(chat int64, _ string, _ []string) error {
 		err = errors.New("function ChatRm not defined")
 	} else {
 		if err = tg.BackendFunctions.ChatRm(chat); err == nil {
-			logger.Noticef("Chat deleted %d", chat)
+			tg.logger.Noticef("Chat deleted %d", chat)
 			tg.SendMsg(tg.Messages.Commands.Detach, []int64{chat}, false)
 		}
 	}
@@ -154,11 +181,11 @@ func (tg *Telegram) setAdminF(chat int64, _ string, args []string) error {
 	} else {
 		if tg.ValidateOTP(args[0]) {
 			if err = tg.BackendFunctions.AdminAdd(chat); err == nil {
-				logger.Noticef("New admin added %d", chat)
+				tg.logger.Noticef("New admin added %d", chat)
 				tg.SendMsg(tg.Messages.Commands.SetAdmin, []int64{chat}, false)
 			}
 		} else {
-			logger.Infof("SetAdmin unauthorized %d", chat)
+			tg.logger.Infof("SetAdmin unauthorized %d", chat)
 			tg.SendMsg(tg.Messages.Unauthorized, []int64{chat}, false)
 		}
 	}
@@ -174,11 +201,11 @@ func (tg *Telegram) rmAdminF(chat int64, _ string, _ []string) error {
 		if exist, err = tg.BackendFunctions.AdminExist(chat); err == nil {
 			if exist {
 				if err = tg.BackendFunctions.AdminRm(chat); err == nil {
-					logger.Noticef("Admin deleted %d", chat)
+					tg.logger.Noticef("Admin deleted %d", chat)
 					tg.SendMsg(tg.Messages.Commands.RmAdmin, []int64{chat}, false)
 				}
 			} else {
-				logger.Infof("RmAdmin unauthorized %d", chat)
+				tg.logger.Infof("RmAdmin unauthorized %d", chat)
 				tg.SendMsg(tg.Messages.Unauthorized, []int64{chat}, false)
 			}
 		}
@@ -231,7 +258,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 			cmd = tg.Commands[cmdStr]
 		}
 		if cmd == nil {
-			logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
+			tg.logger.Warningf("Command not found: %s, chat: %d", cmdStr, chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
 		} else {
 			l := len(args)
@@ -246,7 +273,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 				args = sanitizedArgs
 			}
 			if err := cmd(chat, cmdStr, args); err != nil {
-				logger.Error(err)
+				tg.logger.Error(err)
 				tg.SendMsg(tg.Messages.Error+err.Error(), []int64{chat}, false)
 			}
 		}
@@ -259,7 +286,7 @@ func (tg *Telegram) ValidateOTP(otp string) bool {
 	if tg.totp != nil {
 		res = tg.totp.Verify(otp, int(time.Now().Unix()))
 	} else {
-		logger.Warning("TOTP not initialised")
+		tg.logger.Warning("TOTP not initialised")
 	}
 	return res
 }
@@ -292,7 +319,7 @@ func (tg *Telegram) HandleUpdates() {
 							msg.Content.MessageContentType() == mt.TypeMessageText {
 							content := upMsg.Message.Content.(*mt.MessageText)
 							if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
-								logger.Debug("Got new message:", upMsg.Message)
+								tg.logger.Debug("Got new message:", upMsg.Message)
 								go tg.processCommand(upMsg.Message)
 							}
 						}
@@ -300,7 +327,7 @@ func (tg *Telegram) HandleUpdates() {
 						updateMsg := up.(*mt.UpdateFile)
 						if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
 							if updateMsg.File.Remote.IsUploadingCompleted {
-								logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+								tg.logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
 								if updateMsg.File.Local != nil {
 									if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
 										if fileChan := tg.fileUploadChan[absPath]; fileChan != nil {
@@ -309,16 +336,16 @@ func (tg *Telegram) HandleUpdates() {
 											delete(tg.fileUploadChan, absPath)
 											tg.fileUploadMutex.Unlock()
 										} else {
-											logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
+											tg.logger.Info("Callback file channel not set for ", updateMsg.File.Local.Path)
 										}
 									} else {
-										logger.Error(err)
+										tg.logger.Error(err)
 									}
 								} else {
-									logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
+									tg.logger.Error("Unable to determine local file for ", updateMsg.File.Remote.Id)
 								}
 							} else {
-								logger.Debugf("File uploading %d/%d bytes",
+								tg.logger.Debugf("File uploading %d/%d bytes",
 									updateMsg.File.Remote.UploadedSize,
 									updateMsg.File.Size)
 							}
@@ -338,7 +365,7 @@ func (tg *Telegram) HandleUpdates() {
 
 func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 	if msgText != "" && len(chatIds) > 0 {
-		logger.Debug("Sending message ", msgText, " to ", chatIds)
+		tg.logger.Debug("Sending message ", msgText, " to ", chatIds)
 		var err error
 		var fMsg *mt.FormattedText
 		if formatted {
@@ -354,19 +381,19 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 		for _, chatId := range chatIds {
 			var title string
 			if title, err = tg.GetChatTitle(chatId); err != nil {
-				logger.Warning(err)
+				tg.logger.Warning(err)
 				title = strconv.FormatInt(chatId, 10)
 			}
-			logger.Debug("Sending message to ", title, " id ", chatId)
+			tg.logger.Debug("Sending message to ", title, " id ", chatId)
 			req := &mt.SendMessageRequest{
 				ChatId:              chatId,
 				InputMessageContent: &msg,
 			}
 			if _, err = tg.Client.SendMessage(req); err == nil {
-				logger.Debug("Message to ", title, " has been sent")
+				tg.logger.Debug("Message to ", title, " has been sent")
 			}
 			if err != nil {
-				logger.Error(err)
+				tg.logger.Error(err)
 			}
 		}
 	}
@@ -377,15 +404,15 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	upChan := make(chan string)
 	tg.fileUploadMutex.Lock()
 	if tg.fileUploadChan == nil {
-		logger.Warning("File upload channels closed")
+		tg.logger.Warning("File upload channels closed")
 		tg.fileUploadMutex.Unlock()
 		return
 	} else {
 		if absPath, err := filepath.Abs(fileToWatch); err == nil {
-			logger.Debug("Setting file watch for ", absPath)
+			tg.logger.Debug("Setting file watch for ", absPath)
 			tg.fileUploadChan[absPath] = upChan
 		} else {
-			logger.Error(err)
+			tg.logger.Error(err)
 		}
 	}
 	tg.fileUploadMutex.Unlock()
@@ -393,29 +420,29 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	for _, chatId := range chatIds {
 		var title string
 		if title, err = tg.GetChatTitle(chatId); err != nil {
-			logger.Warning(err)
+			tg.logger.Warning(err)
 			title = strconv.FormatInt(chatId, 10)
 		}
-		logger.Debug("Sending message to ", title, " id ", chatId)
+		tg.logger.Debug("Sending message to ", title, " id ", chatId)
 		req := &mt.SendMessageRequest{
 			ChatId:              chatId,
 			InputMessageContent: content,
 		}
 		if _, err = tg.Client.SendMessage(req); err == nil {
 			if len(sentFileId) == 0 {
-				logger.Debug("Waiting for upload ", fileToWatch)
+				tg.logger.Debug("Waiting for upload ", fileToWatch)
 				sentFileId = <-upChan
 				if len(sentFileId) == 0 {
-					logger.Warning("Unable to get file Id")
+					tg.logger.Warning("Unable to get file Id")
 					break
 				} else {
-					logger.Info("Got file ", fileToWatch, " id ", sentFileId)
+					tg.logger.Info("Got file ", fileToWatch, " id ", sentFileId)
 					idSetter(&mt.InputFileRemote{Id: sentFileId})
 				}
 			}
 		}
 		if err != nil {
-			logger.Error(err)
+			tg.logger.Error(err)
 		}
 	}
 }
@@ -423,10 +450,10 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64, formatted bool) {
 	if len(chatIds) > 0 {
 		if len(photo.Path) == 0 {
-			logger.Warning("Photo is empty, sending as text")
+			tg.logger.Warning("Photo is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			logger.Debugf("Sending photo message ", msgText, " to ", chatIds)
+			tg.logger.Debugf("Sending photo message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -459,10 +486,10 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64, formatted bool) {
 	if len(chatIds) > 0 {
 		if len(video.Path) == 0 {
-			logger.Warning("Video is empty, sending as text")
+			tg.logger.Warning("Video is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			logger.Debugf("Sending video message ", msgText, " to ", chatIds)
+			tg.logger.Debugf("Sending video message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -498,7 +525,7 @@ func (tg *Telegram) GetChatTitle(id int64) (name string, err error) {
 	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
 		name = chat.Title
 	} else {
-		logger.Warning(err)
+		tg.logger.Warning(err)
 		var user *mt.User
 		if user, err = tg.Client.GetUser(&mt.GetUserRequest{UserId: id}); err == nil {
 			name = user.Username
@@ -537,7 +564,7 @@ func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 		if me, err = tg.Client.GetMe(); err == nil {
 			tg.closeChan = make(chan bool)
 			tg.ownName = me.Username
-			logger.Info("Authorized as", me.Username)
+			tg.logger.Info("Authorized as", me.Username)
 		}
 	}
 	return err
@@ -552,7 +579,7 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 				return
 			}
 			stateType := state.AuthorizationStateType()
-			logger.Info(stateType)
+			tg.logger.Info(stateType)
 			var inputChan chan string
 			switch stateType {
 			case mt.TypeAuthorizationStateWaitEncryptionKey:
@@ -595,9 +622,9 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 			if me, err = tg.Client.GetMe(); err == nil {
 				tg.closeChan = make(chan bool)
 				tg.ownName = me.Username
-				logger.Info("Authorized as", me.Username)
+				tg.logger.Info("Authorized as", me.Username)
 				if _, err := tg.GetChats(); err != nil {
-					logger.Warning(err)
+					tg.logger.Warning(err)
 				}
 			}
 		}
@@ -612,7 +639,7 @@ func (tg *Telegram) Close() {
 			<-tg.closeChan
 			tg.closeChan = nil
 		} else {
-			logger.Warning(err)
+			tg.logger.Warning(err)
 		}
 	}
 	if tg.fileUploadChan != nil {
@@ -648,14 +675,13 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 	var totp *gotp.TOTP
 	if len(otpSeed) > 0 {
 		totp = gotp.NewDefaultTOTP(otpSeed)
-	} else {
-		logger.Warning("OTP seed not set, TOTP won't check passwords")
 	}
 	tg := &Telegram{
 		Commands:       make(map[string]CommandFunc),
 		mtParameters:   params,
 		totp:           totp,
 		fileUploadChan: make(map[string]chan string),
+		logger:         defaultLogger,
 	}
 	_ = tg.AddCommand(cmdStart, tg.startF)
 	_ = tg.AddCommand(cmdAttach, tg.attachF)
