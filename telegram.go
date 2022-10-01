@@ -284,7 +284,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 func (tg *Telegram) ValidateOTP(otp string) bool {
 	var res bool
 	if tg.totp != nil {
-		res = tg.totp.Verify(otp, int(time.Now().Unix()))
+		res = tg.totp.Verify(otp, time.Now().Unix())
 	} else {
 		tg.logger.Warning("TOTP not initialised")
 	}
