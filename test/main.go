@@ -30,7 +30,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"syscall"
@@ -59,7 +58,7 @@ func main() {
 	if len(args) == 0 {
 		logger.Fatal("argument not set")
 	}
-	confData, err := ioutil.ReadFile(args[0])
+	confData, err := os.ReadFile(args[0])
 	if err == nil {
 		conf := Config{}
 		if err = json.Unmarshal(confData, &conf); err == nil {

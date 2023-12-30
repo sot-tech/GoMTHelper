@@ -132,13 +132,13 @@ type Telegram struct {
 	Messages         TGMessages
 	Commands         map[string]CommandFunc
 	BackendFunctions TGBackendFunction
-	mtParameters     mt.TdlibParameters
+	mtParameters     *mt.SetTdlibParametersRequest
 	totp             *gotp.TOTP
 	fileUploadChan   map[string]chan string
 	fileUploadMutex  sync.Mutex
 	listener         *mt.Listener
 	closeChan        chan bool
-	ownName          string
+	ownNames         []string
 	logger           TgLogger
 }
 
@@ -241,7 +241,14 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 		}
 		if strings.ContainsRune(cmdStr, '@') {
 			cmdWords := strings.SplitN(cmdStr, "@", 2)
-			if cmdWords[1] != tg.ownName {
+			isMe := false
+			for _, n := range tg.ownNames {
+				if cmdWords[1] == n {
+					isMe = true
+					break
+				}
+			}
+			if !isMe {
 				return
 			}
 			cmdStr = cmdWords[0]
@@ -374,15 +381,15 @@ func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 			fMsg = &mt.FormattedText{Text: msgText}
 		}
 		msg := mt.InputMessageText{
-			Text:                  fMsg,
-			DisableWebPagePreview: true,
-			ClearDraft:            true,
+			Text:               fMsg,
+			LinkPreviewOptions: &mt.LinkPreviewOptions{IsDisabled: true},
+			ClearDraft:         true,
 		}
 		for _, chatId := range chatIds {
-			var title string
+			var title []string
 			if title, err = tg.GetChatTitle(chatId); err != nil {
 				tg.logger.Warning(err)
-				title = strconv.FormatInt(chatId, 10)
+				title = append(title, strconv.FormatInt(chatId, 10))
 			}
 			tg.logger.Debug("Sending message to ", title, " id ", chatId)
 			req := &mt.SendMessageRequest{
@@ -418,10 +425,10 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64, content mt.InputMessageCon
 	tg.fileUploadMutex.Unlock()
 	var err error
 	for _, chatId := range chatIds {
-		var title string
+		var title []string
 		if title, err = tg.GetChatTitle(chatId); err != nil {
 			tg.logger.Warning(err)
-			title = strconv.FormatInt(chatId, 10)
+			title = append(title, strconv.FormatInt(chatId, 10))
 		}
 		tg.logger.Debug("Sending message to ", title, " id ", chatId)
 		req := &mt.SendMessageRequest{
@@ -453,7 +460,7 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 			tg.logger.Warning("Photo is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			tg.logger.Debugf("Sending photo message ", msgText, " to ", chatIds)
+			tg.logger.Debug("Sending photo message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -489,7 +496,7 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 			tg.logger.Warning("Video is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			tg.logger.Debugf("Sending video message ", msgText, " to ", chatIds)
+			tg.logger.Debug("Sending video message ", msgText, " to ", chatIds)
 			var caption *mt.FormattedText
 			var thumbnail *mt.InputThumbnail
 			if formatted {
@@ -520,15 +527,15 @@ func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64
 	}
 }
 
-func (tg *Telegram) GetChatTitle(id int64) (name string, err error) {
+func (tg *Telegram) GetChatTitle(id int64) (names []string, err error) {
 	var chat *mt.Chat
 	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
-		name = chat.Title
+		names = append(names, chat.Title)
 	} else {
 		tg.logger.Warning(err)
 		var user *mt.User
 		if user, err = tg.Client.GetUser(&mt.GetUserRequest{UserId: id}); err == nil {
-			name = user.Username
+			names = user.Usernames.ActiveUsernames
 		}
 	}
 	return
@@ -557,14 +564,14 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
 	var err error
 	auth := mt.BotAuthorizer(botToken)
-	auth.TdlibParameters <- &tg.mtParameters
+	auth.TdlibParameters <- tg.mtParameters
 	logLevelRequest := mt.WithLogVerbosity(&mt.SetLogVerbosityLevelRequest{NewVerbosityLevel: logLevel})
 	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
 		var me *mt.User
 		if me, err = tg.Client.GetMe(); err == nil {
 			tg.closeChan = make(chan bool)
-			tg.ownName = me.Username
-			tg.logger.Info("Authorized as", me.Username)
+			tg.ownNames = me.Usernames.ActiveUsernames
+			tg.logger.Info("Authorized as", tg.ownNames)
 		}
 	}
 	return err
@@ -582,14 +589,11 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 			tg.logger.Info(stateType)
 			var inputChan chan string
 			switch stateType {
-			case mt.TypeAuthorizationStateWaitEncryptionKey:
-				time.Sleep(time.Second)
-				continue
 			case mt.TypeAuthorizationStateClosed, mt.TypeAuthorizationStateClosing, mt.TypeAuthorizationStateLoggingOut:
 				authErr = errors.New("connection closing " + stateType)
 				return
 			case mt.TypeAuthorizationStateWaitTdlibParameters:
-				auth.TdlibParameters <- &tg.mtParameters
+				auth.TdlibParameters <- tg.mtParameters
 				continue
 			case mt.TypeAuthorizationStateWaitPhoneNumber:
 				inputChan = auth.PhoneNumber
@@ -621,8 +625,8 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 			var me *mt.User
 			if me, err = tg.Client.GetMe(); err == nil {
 				tg.closeChan = make(chan bool)
-				tg.ownName = me.Username
-				tg.logger.Info("Authorized as", me.Username)
+				tg.ownNames = me.Usernames.ActiveUsernames
+				tg.logger.Info("Authorized as", tg.ownNames)
 				if _, err := tg.GetChats(); err != nil {
 					tg.logger.Warning(err)
 				}
@@ -655,7 +659,7 @@ func (tg *Telegram) Close() {
 }
 
 func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
-	params := mt.TdlibParameters{
+	params := &mt.SetTdlibParametersRequest{
 		UseTestDc:              false,
 		DatabaseDirectory:      dbLocation,
 		FilesDirectory:         filesLocation,
