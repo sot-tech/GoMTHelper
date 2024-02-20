@@ -63,7 +63,9 @@ func main() {
 		conf := Config{}
 		if err = json.Unmarshal(confData, &conf); err == nil {
 			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
-			defer tg.Close()
+			defer func() {
+				tg.Close()
+			}()
 			tg.Messages = conf.Msg
 
 			if len(conf.BotToken) > 0 {
@@ -82,17 +84,20 @@ func main() {
 				logger.Info(chats)
 				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
-				tg.SendPhoto(MTHelper.MediaParams{
-					Path:   conf.Image,
-					Width:  0,
-					Height: 0,
-				}, conf.Text, conf.Chats, true)
-				tg.SendVideo(MTHelper.MediaParams{
-					Path:      conf.Video,
-					Width:     0,
-					Height:    0,
-					Streaming: true,
-				}, conf.Text, conf.Chats, true)
+				logger.Info("Message sent")
+				//tg.SendPhotoCallback(MTHelper.MediaParams{
+				//	Path:   conf.Image,
+				//	Width:  0,
+				//	Height: 0,
+				//}, conf.Text, conf.Chats, true, nil)
+				//logger.Info("Photo sent")
+				//tg.SendVideoCallback(MTHelper.MediaParams{
+				//	Path:      conf.Video,
+				//	Width:     0,
+				//	Height:    0,
+				//	Streaming: true,
+				//}, conf.Text, conf.Chats, true, nil)
+				//logger.Info("Video sent")
 			}
 		}
 	}

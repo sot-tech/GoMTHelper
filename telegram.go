@@ -38,34 +38,50 @@ import (
 
 	"github.com/op/go-logging"
 	"github.com/xlzd/gotp"
-	mt "github.com/zelenin/go-tdlib/client"
+	nc "github.com/zelenin/go-tdlib/client"
 )
 
 var (
-	defaultLogger = logging.MustGetLogger("sot-te.ch/MTHelper")
-	AppVersion    = "0.275349w"
+	// DebugLogger prints all messages into stdout
+	DebugLogger = logging.MustGetLogger("sot-te.ch/MTHelper")
+	// AppVersion used while new Telegram instance creation
+	AppVersion = "0.295582a"
 )
 
+// TdLogLevel used by native telegram client
+type TdLogLevel int32
+
+func (ll TdLogLevel) buildOption() nc.Option {
+	return nc.WithLogVerbosity(&nc.SetLogVerbosityLevelRequest{NewVerbosityLevel: int32(ll)})
+}
+
 const (
-	MtLogFatal = iota
+	MtLogFatal TdLogLevel = iota
 	MtLogError
 	MtLogWarning
 	MtLogInfo
 	MtLogDebug
 	MtLogVerbose
-
-	cmdStart    = "/start"
-	cmdAttach   = "/attach"
-	cmdDetach   = "/detach"
-	cmdSetAdmin = "/setadmin"
-	cmdRmAdmin  = "/rmadmin"
-	cmdState    = "/state"
-
-	cmdMaxLen = 1000
-
-	chatsPageNum int32 = math.MaxInt32
 )
 
+// Constants for telegram bot commands
+const (
+	CmdStart    = "/start"
+	CmdAttach   = "/attach"
+	CmdDetach   = "/detach"
+	CmdSetAdmin = "/setadmin"
+	CmdRmAdmin  = "/rmadmin"
+	CmdState    = "/state"
+)
+
+// MessageMaxLen message max length.
+// If message content is longer than this constant, it will be discarded.
+const MessageMaxLen = 1000
+
+const chatsPageNum int32 = math.MaxInt32
+
+// TgLogger abstract logger interface for MTHelper.
+// Custom logger can be set for specific Telegram instance.
 type TgLogger interface {
 	Error(args ...interface{})
 	Warning(args ...interface{})
@@ -91,54 +107,113 @@ func (nopLogger) Info(...interface{}) {
 func (nopLogger) Debug(...interface{}) {
 }
 
-var silentLogger TgLogger = nopLogger{}
+// SilentLogger discards all messages
+var SilentLogger TgLogger = nopLogger{}
 
+// CommandFunc function prototype for message/command processing.
+// chatId - is ID of other party, who sent message to instance.
+// Message will be separated to cmd (first token) and args (other tokens) with
+// space and dash (_) separators.
+// If message content is longer than MessageMaxLen or if
+// cmd is `/command@Name`-like and `Name` is not one of user's/bot's name,
+// entire message will be discarded before CommandFunc call.
 type CommandFunc func(chatId int64, cmd string, args []string) error
+
+// FileUploadCallback function prototype for executing after media message
+// (Telegram.SendPhotoCallback and Telegram.SendVideoCallback) will be sent to all participants.
+// path - is absolute path of uploaded local file, id - uploaded file's telegram ID.
 type FileUploadCallback func(path, id string)
 
+// TGBackendFunction structure, which contains functions,
+// used for chats operating, such as storing/deleting some
+// as regular or administrator.
+// All functions MUST be concurrent-safe.
 type TGBackendFunction struct {
-	ChatExist  func(int64) (bool, error)
-	ChatAdd    func(int64) error
-	ChatRm     func(int64) error
+	// ChatExist checks if store contains chat added by CmdAttach
+	ChatExist func(int64) (bool, error)
+	// ChatAdd function to execute on CmdAttach command
+	ChatAdd func(int64) error
+	// ChatRm function to execute on CmdDetach command
+	ChatRm func(int64) error
+	// AdminExist checks if store contains chat added by CmdSetAdmin.
 	AdminExist func(int64) (bool, error)
-	AdminAdd   func(int64) error
-	AdminRm    func(int64) error
-	State      func(int64) (string, error)
+	// AdminAdd function to execute on CmdSetAdmin command.
+	// Works only if TOTP set up and chat send correct value.
+	// Should grant administrator rights to provided chat ID.
+	AdminAdd func(int64) error
+	// AdminRm function to execute on CmdRmAdmin command.
+	// Should revoke administrator rights from provided chat ID.
+	AdminRm func(int64) error
+	// State function to execute on CmdState command.
+	// Should report state/role of chat.
+	State func(int64) (string, error)
 }
 
+// TGCommandResponse set of static responses to commands from TGBackendFunction
 type TGCommandResponse struct {
-	Start    string `json:"start"`
-	Attach   string `json:"attach"`
-	Detach   string `json:"detach"`
+	// Start static response to CmdStart command
+	Start string `json:"start"`
+	// Attach static message to CmdAttach command if TGBackendFunction.ChatAdd executed successfully
+	Attach string `json:"attach"`
+	// Detach static message to CmdDetach command if TGBackendFunction.ChatRm executed successfully
+	Detach string `json:"detach"`
+	// SetAdmin static message to CmdSetAdmin command if TGBackendFunction.AdminAdd executed successfully
 	SetAdmin string `json:"setadmin"`
-	RmAdmin  string `json:"rmadmin"`
-	Unknown  string `json:"unknown"`
+	// RmAdmin static message to CmdRmAdmin command if TGBackendFunction.AdminRm executed successfully
+	RmAdmin string `json:"rmadmin"`
+	// Unknown static message which will be sent if provided command is unknown
+	Unknown string `json:"unknown"`
 }
 
+// TGMessages is extended structure to command responses
 type TGMessages struct {
-	Commands     TGCommandResponse `json:"cmds"`
-	Unauthorized string            `json:"auth"`
-	Error        string            `json:"error"`
+	Commands TGCommandResponse `json:"cmds"`
+	// Unauthorized static message which will be sent if chat is not authorized
+	// to execute command i.e. CmdRmAdmin called from chat which is not in admin list
+	// or CmdSetAdmin - if OTP validation failed
+	Unauthorized string `json:"auth"`
+	// Error static message prefix, which will be sent if error occurred.
+	Error string `json:"error"`
 }
 
+// MediaParams structure used for image/video sending.
+// See Telegram.SendPhotoCallback, Telegram.SendVideoCallback.
 type MediaParams struct {
-	Path      string
-	Width     int32
-	Height    int32
+	// Path to file to be sent to telegram. Must exist before call.
+	Path string
+	// Width and Height are dimensions of media file.
+	// If not provided, some clients will show black square instead of preview
+	Width, Height int32
+	// Streaming flag if media content can be streamed
+	// (i.e. play video without saving it locally).
 	Streaming bool
+	// Thumbnail is parameters for video thumbnail image.
 	Thumbnail *MediaParams
 }
 
+// Telegram is utility structure for native TD client wrapper.
 type Telegram struct {
-	Client                  *mt.Client
-	Messages                TGMessages
-	Commands                map[string]CommandFunc
-	BackendFunctions        TGBackendFunction
-	mtParameters            *mt.SetTdlibParametersRequest
-	totp                    *gotp.TOTP
+	// Client is direct interface for telegram wrapper
+	Client *nc.Client
+	// Structure, containing message responses
+	Messages TGMessages
+	// Commands - map of command handlers.
+	// Keys are slash-prefixed commands (/start, /help...).
+	// See CommandFunc specification.
+	Commands         map[string]CommandFunc
+	commandsMu       sync.RWMutex
+	BackendFunctions TGBackendFunction
+	// TdParameters parameters, used for native client creation
+	TdParameters *nc.SetTdlibParametersRequest
+	// TOTP used to validate privileged commands.
+	// If not set, validation disabled.
+	TOTP *gotp.TOTP
+	// Logger internal logger.
+	// Utility will panic if nil, provide at least SilentLogger
+	Logger                  TgLogger
 	fileCallbacks           sync.Map
+	fileCallbacksOutdated   sync.Map
 	ownNames                []string
-	logger                  TgLogger
 	onceStarter, onceCloser sync.Once
 	stopWaiter              sync.WaitGroup
 }
@@ -155,7 +230,7 @@ func (tg *Telegram) attachF(chat int64, _ string, _ []string) error {
 		err = errors.New("function ChatAdd not defined")
 	} else {
 		if err = tg.BackendFunctions.ChatAdd(chat); err == nil {
-			tg.logger.Notice("New chat added ", chat)
+			tg.Logger.Notice("New chat added ", chat)
 			tg.SendMsg(tg.Messages.Commands.Attach, []int64{chat}, false)
 		}
 	}
@@ -168,7 +243,7 @@ func (tg *Telegram) detachF(chat int64, _ string, _ []string) error {
 		err = errors.New("function ChatRm not defined")
 	} else {
 		if err = tg.BackendFunctions.ChatRm(chat); err == nil {
-			tg.logger.Notice("Chat deleted ", chat)
+			tg.Logger.Notice("Chat deleted ", chat)
 			tg.SendMsg(tg.Messages.Commands.Detach, []int64{chat}, false)
 		}
 	}
@@ -182,11 +257,11 @@ func (tg *Telegram) setAdminF(chat int64, _ string, args []string) error {
 	} else {
 		if tg.ValidateOTP(args[0]) {
 			if err = tg.BackendFunctions.AdminAdd(chat); err == nil {
-				tg.logger.Notice("New admin added ", chat)
+				tg.Logger.Notice("New admin added ", chat)
 				tg.SendMsg(tg.Messages.Commands.SetAdmin, []int64{chat}, false)
 			}
 		} else {
-			tg.logger.Info("SetAdmin unauthorized ", chat)
+			tg.Logger.Info("SetAdmin unauthorized ", chat)
 			tg.SendMsg(tg.Messages.Unauthorized, []int64{chat}, false)
 		}
 	}
@@ -202,11 +277,11 @@ func (tg *Telegram) rmAdminF(chat int64, _ string, _ []string) error {
 		if exist, err = tg.BackendFunctions.AdminExist(chat); err == nil {
 			if exist {
 				if err = tg.BackendFunctions.AdminRm(chat); err == nil {
-					tg.logger.Notice("Admin deleted ", chat)
+					tg.Logger.Notice("Admin deleted ", chat)
 					tg.SendMsg(tg.Messages.Commands.RmAdmin, []int64{chat}, false)
 				}
 			} else {
-				tg.logger.Info("RmAdmin unauthorized ", chat)
+				tg.Logger.Info("RmAdmin unauthorized ", chat)
 				tg.SendMsg(tg.Messages.Unauthorized, []int64{chat}, false)
 			}
 		}
@@ -227,10 +302,10 @@ func (tg *Telegram) stateF(chat int64, _ string, _ []string) error {
 	return err
 }
 
-func (tg *Telegram) processCommand(msg *mt.Message) {
+func (tg *Telegram) processCommand(msg *nc.Message) {
 	chat := msg.ChatId
-	content := msg.Content.(*mt.MessageText)
-	if content != nil && content.Text != nil && len(content.Text.Text) <= cmdMaxLen {
+	content := msg.Content.(*nc.MessageText)
+	if content != nil && content.Text != nil && len(content.Text.Text) <= MessageMaxLen {
 		words := strings.Split(content.Text.Text, " ")
 		var cmdStr string
 		args := make([]string, 0)
@@ -254,6 +329,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 			}
 			cmdStr = cmdWords[0]
 		}
+		tg.commandsMu.RLock()
 		cmd := tg.Commands[cmdStr]
 		if cmd == nil && strings.ContainsRune(cmdStr, '_') {
 			words = strings.Split(cmdStr, "_")
@@ -265,8 +341,9 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 			}
 			cmd = tg.Commands[cmdStr]
 		}
+		tg.commandsMu.RUnlock()
 		if cmd == nil {
-			tg.logger.Warning("Command not found:", cmdStr, "chat: ", chat)
+			tg.Logger.Warning("Command not found:", cmdStr, "chat: ", chat)
 			tg.SendMsg(tg.Messages.Commands.Unknown, []int64{chat}, false)
 		} else {
 			l := len(args)
@@ -281,7 +358,7 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 				args = sanitizedArgs
 			}
 			if err := cmd(chat, cmdStr, args); err != nil {
-				tg.logger.Error(err)
+				tg.Logger.Error(err)
 				tg.SendMsg(tg.Messages.Error+err.Error(), []int64{chat}, false)
 			}
 		}
@@ -289,29 +366,43 @@ func (tg *Telegram) processCommand(msg *mt.Message) {
 
 }
 
-func (tg *Telegram) ValidateOTP(otp string) bool {
+// ValidateOTP checks if provided value equals to code, generated by TOTP.
+// Function also will return false is TOTP not configured for this Telegram instance.
+func (tg *Telegram) ValidateOTP(value string) bool {
 	var res bool
-	if tg.totp != nil {
-		res = tg.totp.Verify(otp, time.Now().Unix())
+	if tg.TOTP != nil {
+		res = tg.TOTP.Verify(value, time.Now().Unix())
 	} else {
-		tg.logger.Warning("TOTP not initialised")
+		tg.Logger.Warning("TOTP not initialised")
 	}
 	return res
 }
 
-func (tg *Telegram) AddCommand(cmd string, cmdFunc CommandFunc) error {
+var ErrEmptyCommand = errors.New("unable to add empty command")
+
+// AddCommand registers command handler.
+// Every call of cmdFunc will be in separate goroutine.
+// See CommandFunc specification.
+// Function is concurrent-safe.
+func (tg *Telegram) AddCommand(command string, cmdFunc CommandFunc) error {
 	var err error
-	if cmd == "" || cmdFunc == nil {
-		err = errors.New("unable to add empty command")
+	tg.commandsMu.Lock()
+	if command == "" || cmdFunc == nil {
+		err = ErrEmptyCommand
 	} else if tg.Commands == nil {
 		tg.Commands = make(map[string]CommandFunc)
 	}
-	tg.Commands[cmd] = cmdFunc
+	tg.Commands[command] = cmdFunc
+	tg.commandsMu.Unlock()
 	return err
 }
 
-func (tg *Telegram) RmCommand(cmd string) {
-	delete(tg.Commands, cmd)
+// RmCommand removes handler for command.
+// Function is not concurrent-safe.
+func (tg *Telegram) RmCommand(command string) {
+	tg.commandsMu.Lock()
+	delete(tg.Commands, command)
+	tg.commandsMu.Unlock()
 }
 
 func (tg *Telegram) startMessagesListener(closeChan <-chan bool) {
@@ -322,14 +413,14 @@ func (tg *Telegram) startMessagesListener(closeChan <-chan bool) {
 	for {
 		select {
 		case up := <-listener.Updates:
-			if up != nil && up.GetClass() == mt.ClassUpdate && up.GetType() == mt.TypeUpdateNewMessage {
-				upMsg := up.(*mt.UpdateNewMessage)
+			if up != nil && up.GetClass() == nc.ClassUpdate && up.GetType() == nc.TypeUpdateNewMessage {
+				upMsg := up.(*nc.UpdateNewMessage)
 				if msg := upMsg.Message; msg != nil && !msg.IsOutgoing && msg.Content != nil &&
-					msg.Content.MessageContentType() == mt.TypeMessageText {
-					content := upMsg.Message.Content.(*mt.MessageText)
+					msg.Content.MessageContentType() == nc.TypeMessageText {
+					content := upMsg.Message.Content.(*nc.MessageText)
 					if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
-						tg.logger.Debug("Got new message:", upMsg.Message)
-						go func(msg *mt.Message) {
+						tg.Logger.Debug("Got new message:", upMsg.Message)
+						go func(msg *nc.Message) {
 							tg.stopWaiter.Add(1)
 							defer tg.stopWaiter.Done()
 							tg.processCommand(msg)
@@ -338,6 +429,7 @@ func (tg *Telegram) startMessagesListener(closeChan <-chan bool) {
 				}
 			}
 		case <-closeChan:
+			tg.Logger.Debug("Message listener stopped")
 			return
 		}
 	}
@@ -351,32 +443,39 @@ func (tg *Telegram) startFileUploadListener(closeChan <-chan bool) {
 	for {
 		select {
 		case up := <-listener.Updates:
-			if up != nil && up.GetClass() == mt.ClassUpdate && up.GetType() == mt.TypeUpdateFile {
-				updateMsg := up.(*mt.UpdateFile)
-				if updateMsg != nil && updateMsg.File != nil && updateMsg.File.Remote != nil {
+			if up != nil && up.GetClass() == nc.ClassUpdate && up.GetType() == nc.TypeUpdateFile {
+				updateMsg := up.(*nc.UpdateFile)
+				if updateMsg != nil &&
+					updateMsg.File != nil &&
+					updateMsg.File.Remote != nil &&
+					updateMsg.File.Local != nil {
 					if updateMsg.File.Remote.IsUploadingCompleted {
-						tg.logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
+						tg.Logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
 						if updateMsg.File.Local != nil {
 							if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
 								if callbacks, found := tg.fileCallbacks.LoadAndDelete(absPath); found {
+									tg.fileCallbacksOutdated.Store(absPath, true)
 									go func(callbacks []FileUploadCallback, path, id string) {
 										tg.stopWaiter.Add(1)
 										defer tg.stopWaiter.Done()
+										tg.Logger.Debug("Executing ", len(callbacks), " callbacks for file ", path)
 										for _, callback := range callbacks {
 											callback(path, id)
 										}
 									}(callbacks.([]FileUploadCallback), absPath, updateMsg.File.Remote.Id)
-								} else {
-									tg.logger.Debug("Callback for ", absPath, " not found")
+								} else if _, found = tg.fileCallbacksOutdated.LoadAndDelete(absPath); !found {
+									tg.Logger.Warning("Callbacks for ", absPath, " not registered")
 								}
 							} else {
-								tg.logger.Error(err)
+								tg.Logger.Error(err)
 							}
 						} else {
-							tg.logger.Warning("Unable to determine local file for ", updateMsg.File.Remote.Id)
+							tg.Logger.Warning("Unable to determine local file for ", updateMsg.File.Remote.Id)
 						}
 					} else {
-						tg.logger.Debug("File uploading ",
+						tg.Logger.Debug("File ",
+							updateMsg.File.Local.Path,
+							" uploading: ",
 							updateMsg.File.Remote.UploadedSize,
 							" of ",
 							updateMsg.File.Size, "bytes",
@@ -385,6 +484,7 @@ func (tg *Telegram) startFileUploadListener(closeChan <-chan bool) {
 				}
 			}
 		case <-closeChan:
+			tg.Logger.Debug("File upload listener stopped")
 			return
 		}
 	}
@@ -396,9 +496,10 @@ func (tg *Telegram) startAuthClosedListener(closeChan chan bool) {
 	listener := tg.Client.GetListener()
 	defer listener.Close()
 	for up := range listener.Updates {
-		if up != nil && up.GetClass() == mt.ClassUpdate && up.GetType() == mt.TypeUpdateAuthorizationState {
-			upState := up.(*mt.UpdateAuthorizationState)
-			if upState.AuthorizationState.AuthorizationStateType() == mt.TypeAuthorizationStateClosed {
+		if up != nil && up.GetClass() == nc.ClassUpdate && up.GetType() == nc.TypeUpdateAuthorizationState {
+			upState := up.(*nc.UpdateAuthorizationState)
+			if upState.AuthorizationState.AuthorizationStateType() == nc.TypeAuthorizationStateClosed {
+				tg.Logger.Debug("Received auth closed event")
 				close(closeChan)
 				return
 			}
@@ -406,58 +507,66 @@ func (tg *Telegram) startAuthClosedListener(closeChan chan bool) {
 	}
 }
 
+// HandleUpdates starts messages/command listener.
+// Every registered CommandFunc
+// Function will block goroutine until Close called.
 func (tg *Telegram) HandleUpdates() {
-	closeChan := make(chan bool)
-	go tg.startMessagesListener(closeChan)
-	go tg.startFileUploadListener(closeChan)
-	tg.startAuthClosedListener(closeChan)
+	tg.onceStarter.Do(func() {
+		closeChan := make(chan bool)
+		go tg.startMessagesListener(closeChan)
+		go tg.startFileUploadListener(closeChan)
+		tg.startAuthClosedListener(closeChan)
+	})
 }
 
+// SendMsg sends text message to provided chatIds.
+// If formatted flag checked, msgText will be parsed as markdown.
+// Function will block goroutine until message will be sent to all chatIds.
 func (tg *Telegram) SendMsg(msgText string, chatIds []int64, formatted bool) {
 	if msgText != "" && len(chatIds) > 0 {
-		tg.logger.Debug("Sending message ", msgText, " to ", chatIds)
+		tg.Logger.Debug("Sending message ", msgText, " to ", chatIds)
 		var err error
-		var fMsg *mt.FormattedText
+		var fMsg *nc.FormattedText
 		if formatted {
 			fMsg = FormatText(msgText)
 		} else {
-			fMsg = &mt.FormattedText{Text: msgText}
+			fMsg = &nc.FormattedText{Text: msgText}
 		}
-		msg := mt.InputMessageText{
+		msg := nc.InputMessageText{
 			Text:               fMsg,
-			LinkPreviewOptions: &mt.LinkPreviewOptions{IsDisabled: true},
+			LinkPreviewOptions: &nc.LinkPreviewOptions{IsDisabled: true},
 			ClearDraft:         true,
 		}
 		for _, chatId := range chatIds {
 			var title []string
 			if title, err = tg.GetChatTitle(chatId); err != nil {
-				tg.logger.Warning(err)
+				tg.Logger.Warning(err)
 				title = append(title, strconv.FormatInt(chatId, 10))
 			}
-			tg.logger.Debug("Sending message to ", title, " id ", chatId)
-			req := &mt.SendMessageRequest{
+			tg.Logger.Debug("Sending message to ", title, " id ", chatId)
+			req := &nc.SendMessageRequest{
 				ChatId:              chatId,
 				InputMessageContent: &msg,
 			}
 			if _, err = tg.Client.SendMessage(req); err == nil {
-				tg.logger.Debug("Message to ", title, " has been sent")
+				tg.Logger.Debug("Message to ", title, " has been sent")
 			}
 			if err != nil {
-				tg.logger.Error(err)
+				tg.Logger.Error(err)
 			}
 		}
 	}
 }
 
 func (tg *Telegram) sendMediaMessage(chatIds []int64,
-	content mt.InputMessageContent,
+	content nc.InputMessageContent,
 	fileToWatch string,
 	idSetter FileUploadCallback,
 	uploadCallback FileUploadCallback) {
 	absPath, err := filepath.Abs(fileToWatch)
 
 	if err != nil {
-		tg.logger.Error(err)
+		tg.Logger.Error(err)
 		return
 	}
 
@@ -465,16 +574,16 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64,
 		var err error
 		var title []string
 		if title, err = tg.GetChatTitle(chat); err != nil {
-			tg.logger.Warning(err)
+			tg.Logger.Warning(err)
 			title = append(title, strconv.FormatInt(chat, 10))
 		}
-		tg.logger.Debug("Sending message to ", title, " id ", chat)
-		req := &mt.SendMessageRequest{
+		tg.Logger.Debug("Sending message to ", title, " id ", chat)
+		req := &nc.SendMessageRequest{
 			ChatId:              chat,
 			InputMessageContent: content,
 		}
 		if _, err = tg.Client.SendMessage(req); err != nil {
-			tg.logger.Error(err)
+			tg.Logger.Error(err)
 		}
 	}
 
@@ -492,13 +601,17 @@ func (tg *Telegram) sendMediaMessage(chatIds []int64,
 	}
 
 	if len(callbacks) > 0 {
-		tg.logger.Debug("Setting file watch for ", absPath)
+		tg.Logger.Debug("Setting file watch for ", absPath)
 		tg.fileCallbacks.Store(absPath, callbacks)
 	}
 
 	sendFn(chatIds[0])
 }
 
+// SendPhotoCallback sends photo/image to provided chatIds with msgText caption.
+// If formatted flag checked, msgText will be parsed as markdown.
+// Function works asynchronous and will execute callback (if any) after
+// message will be sent to all chatIds.
 func (tg *Telegram) SendPhotoCallback(photo MediaParams,
 	msgText string,
 	chatIds []int64,
@@ -506,47 +619,54 @@ func (tg *Telegram) SendPhotoCallback(photo MediaParams,
 	callback FileUploadCallback) {
 	if len(chatIds) > 0 {
 		if len(photo.Path) == 0 {
-			tg.logger.Warning("Photo is empty, sending as text")
+			tg.Logger.Warning("Photo is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			tg.logger.Debug("Sending photo message ", msgText, " to ", chatIds)
-			var caption *mt.FormattedText
-			var thumbnail *mt.InputThumbnail
+			tg.Logger.Debug("Sending photo message ", msgText, " to ", chatIds)
+			var caption *nc.FormattedText
+			var thumbnail *nc.InputThumbnail
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
-				caption = &mt.FormattedText{Text: msgText}
+				caption = &nc.FormattedText{Text: msgText}
 			}
 			if photo.Thumbnail != nil && len(photo.Thumbnail.Path) > 0 {
-				thumbnail = &mt.InputThumbnail{
-					Thumbnail: &mt.InputFileLocal{Path: photo.Thumbnail.Path},
+				thumbnail = &nc.InputThumbnail{
+					Thumbnail: &nc.InputFileLocal{Path: photo.Thumbnail.Path},
 					Width:     photo.Thumbnail.Width,
 					Height:    photo.Thumbnail.Height,
 				}
 			}
-			msg := &mt.InputMessagePhoto{
-				Photo:     &mt.InputFileLocal{Path: photo.Path},
+			msg := &nc.InputMessagePhoto{
+				Photo:     &nc.InputFileLocal{Path: photo.Path},
 				Thumbnail: thumbnail,
 				Width:     photo.Width,
 				Height:    photo.Height,
 				Caption:   caption,
 			}
 			idSetter := func(_, id string) {
-				msg.Photo = &mt.InputFileRemote{Id: id}
+				msg.Photo = &nc.InputFileRemote{Id: id}
 			}
 			tg.sendMediaMessage(chatIds, msg, photo.Path, idSetter, callback)
 		}
 	}
 }
 
+// SendPhoto sends photo/image to provided chatIds with msgText caption.
+// If formatted flag checked, msgText will be parsed as markdown.
+// Function will block goroutine until message will be sent to all chatIds.
 func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64, formatted bool) {
 	ch := make(chan bool)
 	tg.SendPhotoCallback(photo, msgText, chatIds, formatted, func(string, string) {
-		ch <- true
+		close(ch)
 	})
 	<-ch
 }
 
+// SendVideoCallback sends video to provided chatIds with msgText caption.
+// If formatted flag checked, msgText will be parsed as markdown.
+// Function works asynchronous and will execute callback (if any) after
+// message will be sent to all chatIds.
 func (tg *Telegram) SendVideoCallback(video MediaParams,
 	msgText string,
 	chatIds []int64,
@@ -554,26 +674,26 @@ func (tg *Telegram) SendVideoCallback(video MediaParams,
 	callback FileUploadCallback) {
 	if len(chatIds) > 0 {
 		if len(video.Path) == 0 {
-			tg.logger.Warning("Video is empty, sending as text")
+			tg.Logger.Warning("Video is empty, sending as text")
 			tg.SendMsg(msgText, chatIds, formatted)
 		} else {
-			tg.logger.Debug("Sending video message ", msgText, " to ", chatIds)
-			var caption *mt.FormattedText
-			var thumbnail *mt.InputThumbnail
+			tg.Logger.Debug("Sending video message ", msgText, " to ", chatIds)
+			var caption *nc.FormattedText
+			var thumbnail *nc.InputThumbnail
 			if formatted {
 				caption = FormatText(msgText)
 			} else {
-				caption = &mt.FormattedText{Text: msgText}
+				caption = &nc.FormattedText{Text: msgText}
 			}
 			if video.Thumbnail != nil && len(video.Thumbnail.Path) > 0 {
-				thumbnail = &mt.InputThumbnail{
-					Thumbnail: &mt.InputFileLocal{Path: video.Thumbnail.Path},
+				thumbnail = &nc.InputThumbnail{
+					Thumbnail: &nc.InputFileLocal{Path: video.Thumbnail.Path},
 					Width:     video.Thumbnail.Width,
 					Height:    video.Thumbnail.Height,
 				}
 			}
-			msg := &mt.InputMessageVideo{
-				Video:             &mt.InputFileLocal{Path: video.Path},
+			msg := &nc.InputMessageVideo{
+				Video:             &nc.InputFileLocal{Path: video.Path},
 				Thumbnail:         thumbnail,
 				Width:             video.Width,
 				Height:            video.Height,
@@ -581,44 +701,51 @@ func (tg *Telegram) SendVideoCallback(video MediaParams,
 				Caption:           caption,
 			}
 			idSetter := func(_, id string) {
-				msg.Video = &mt.InputFileRemote{Id: id}
+				msg.Video = &nc.InputFileRemote{Id: id}
 			}
 			tg.sendMediaMessage(chatIds, msg, video.Path, idSetter, callback)
 		}
 	}
 }
 
+// SendVideo sends video to provided chatIds with msgText caption.
+// If formatted flag checked, msgText will be parsed as markdown.
+// Function will block goroutine until message will be sent to all chatIds.
 func (tg *Telegram) SendVideo(video MediaParams, msgText string, chatIds []int64, formatted bool) {
 	ch := make(chan bool)
 	tg.SendVideoCallback(video, msgText, chatIds, formatted, func(string, string) {
-		ch <- true
+		close(ch)
 	})
 	<-ch
 }
 
+// GetChatTitle returns chat titles or usernames of provided chat id.
 func (tg *Telegram) GetChatTitle(id int64) (names []string, err error) {
-	var chat *mt.Chat
-	if chat, err = tg.Client.GetChat(&mt.GetChatRequest{ChatId: id}); err == nil {
+	var chat *nc.Chat
+	if chat, err = tg.Client.GetChat(&nc.GetChatRequest{ChatId: id}); err == nil {
 		names = append(names, chat.Title)
 	} else {
-		tg.logger.Warning(err)
-		var user *mt.User
-		if user, err = tg.Client.GetUser(&mt.GetUserRequest{UserId: id}); err == nil {
+		tg.Logger.Warning(err)
+		var user *nc.User
+		if user, err = tg.Client.GetUser(&nc.GetUserRequest{UserId: id}); err == nil {
 			names = user.Usernames.ActiveUsernames
 		}
 	}
 	return
 }
 
+// GetChats loads and returns list of known chat IDs.
+// If current instance logged in as bot, returned list may be empty,
+// due to telegram limitations.
 func (tg *Telegram) GetChats() ([]int64, error) {
 	var err error
 	allChats := make([]int64, 0, 50)
-	var chats *mt.Chats
-	loadReq := &mt.LoadChatsRequest{
+	var chats *nc.Chats
+	loadReq := &nc.LoadChatsRequest{
 		Limit: chatsPageNum,
 	}
 	if _, err = tg.Client.LoadChats(loadReq); err == nil {
-		getReq := &mt.GetChatsRequest{
+		getReq := &nc.GetChatsRequest{
 			Limit: chatsPageNum,
 		}
 		if chats, err = tg.Client.GetChats(getReq); err == nil && chats != nil {
@@ -630,46 +757,56 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 	return allChats, err
 }
 
-func (tg *Telegram) LoginAsBot(botToken string, logLevel int32) error {
+// LoginAsBot creates new telegram client and logs in with bot credentials
+// (bot token).
+// logLevel used to limit messages from native TD library.
+func (tg *Telegram) LoginAsBot(botToken string, logLevel TdLogLevel) error {
 	var err error
-	auth := mt.BotAuthorizer(botToken)
-	auth.TdlibParameters <- tg.mtParameters
-	logLevelRequest := mt.WithLogVerbosity(&mt.SetLogVerbosityLevelRequest{NewVerbosityLevel: logLevel})
-	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
-		var me *mt.User
+	auth := nc.BotAuthorizer(botToken)
+	auth.TdlibParameters <- tg.TdParameters
+	if tg.Client, err = nc.NewClient(auth, logLevel.buildOption()); err == nil {
+		var me *nc.User
 		if me, err = tg.Client.GetMe(); err == nil {
 			tg.ownNames = me.Usernames.ActiveUsernames
-			tg.logger.Info("Authorized as", tg.ownNames)
+			tg.Logger.Info("Authorized as", tg.ownNames)
 		}
 	}
 	return err
 }
 
-func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLevel int32) error {
+var ErrAuthHandlerNotProvided = errors.New("authorization handler not provided")
+
+// LoginAsUser creates new native client and logs in as regular user.
+// inputHandler must return requested login data, such as:
+// client.TypeAuthorizationStateWaitPhoneNumber, client.TypeAuthorizationStateWaitCode and
+// client.TypeAuthorizationStateWaitPassword.
+// If inputHandler returns error, this function will also return this error.
+// logLevel used to limit messages from native TD library.
+func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLevel TdLogLevel) error {
 	var err, authErr error
-	auth := mt.ClientAuthorizer()
+	auth := nc.ClientAuthorizer()
 	go func() {
 		for state := range auth.State {
 			if state == nil {
 				return
 			}
 			stateType := state.AuthorizationStateType()
-			tg.logger.Info(stateType)
+			tg.Logger.Info(stateType)
 			var inputChan chan string
 			switch stateType {
-			case mt.TypeAuthorizationStateClosed, mt.TypeAuthorizationStateClosing, mt.TypeAuthorizationStateLoggingOut:
+			case nc.TypeAuthorizationStateClosed, nc.TypeAuthorizationStateClosing, nc.TypeAuthorizationStateLoggingOut:
 				authErr = errors.New("connection closing " + stateType)
 				return
-			case mt.TypeAuthorizationStateWaitTdlibParameters:
-				auth.TdlibParameters <- tg.mtParameters
+			case nc.TypeAuthorizationStateWaitTdlibParameters:
+				auth.TdlibParameters <- tg.TdParameters
 				continue
-			case mt.TypeAuthorizationStateWaitPhoneNumber:
+			case nc.TypeAuthorizationStateWaitPhoneNumber:
 				inputChan = auth.PhoneNumber
-			case mt.TypeAuthorizationStateWaitCode:
+			case nc.TypeAuthorizationStateWaitCode:
 				inputChan = auth.Code
-			case mt.TypeAuthorizationStateWaitPassword:
+			case nc.TypeAuthorizationStateWaitPassword:
 				inputChan = auth.Password
-			case mt.TypeAuthorizationStateReady:
+			case nc.TypeAuthorizationStateReady:
 				return
 			}
 			if inputHandler != nil {
@@ -680,22 +817,21 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 					return
 				}
 			} else {
-				authErr = errors.New("authorization handler not set")
+				authErr = ErrAuthHandlerNotProvided
 				return
 			}
 		}
 	}()
-	logLevelRequest := mt.WithLogVerbosity(&mt.SetLogVerbosityLevelRequest{NewVerbosityLevel: logLevel})
-	if tg.Client, err = mt.NewClient(auth, logLevelRequest); err == nil {
+	if tg.Client, err = nc.NewClient(auth, logLevel.buildOption()); err == nil {
 		if authErr != nil {
 			err = authErr
 		} else {
-			var me *mt.User
+			var me *nc.User
 			if me, err = tg.Client.GetMe(); err == nil {
 				tg.ownNames = me.Usernames.ActiveUsernames
-				tg.logger.Info("Authorized as", tg.ownNames)
+				tg.Logger.Info("Authorized as", tg.ownNames)
 				if _, err := tg.GetChats(); err != nil {
-					tg.logger.Warning(err)
+					tg.Logger.Warning(err)
 				}
 			}
 		}
@@ -703,25 +839,51 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 	return err
 }
 
+// Close stops native TD wrapper and message listener.
+// Function will block goroutine until message listener
+// and all started FileUploadCallback-s and CommandFunc-s complete execution.
 func (tg *Telegram) Close() {
 	tg.onceCloser.Do(func() {
 		if tg.Client != nil {
+			tg.Logger.Info("Closing telegram client")
 			if _, err := tg.Client.Close(); err != nil {
-				tg.logger.Warning(err)
+				tg.Logger.Warning(err)
 			}
 		}
+		tg.Logger.Debug("Waiting subroutines to stop")
 		tg.stopWaiter.Wait()
+		tg.Logger.Debug("Subroutines stopped")
 	})
 }
 
+// SetLogger registers logger for this Telegram instance.
+// Provided logger will NOT be used by native TD client,
+// to limit level of native client - pass logLevel to
+// Telegram.LoginAsUser or Telegram.LoginAsBot functions.
+// If logger is nil, all messages from Telegram will be discarded.
 func (tg *Telegram) SetLogger(logger TgLogger) {
 	if logger == nil {
-		tg.logger = silentLogger
+		tg.Logger = SilentLogger
 	} else {
-		tg.logger = logger
+		tg.Logger = logger
 	}
 }
 
+// New creates new Telegram instance with provided parameters, DebugLogger and
+// registered handlers for CmdStart, CmdAttach, CmdDetach, CmdSetAdmin, CmdRmAdmin and CmdState commands.
+//
+// apiId and apiHash - parameters, received from telegram application page: https://my.telegram.org/apps.
+//
+// dbLocation - path in filesystem where to store internal database.
+// Should be in persistent store and may avoid providing regular
+// user credentials if logged in before (Telegram.LoginAsUser needs to be called anyway).
+//
+// filesLocation - path in filesystem where to store files, if empty - defaults to current working directory.
+// Mainly unused and can be placed to temp directory, if empty - defaults to current working directory.
+//
+// otpSeed is optional base32 seed.
+// If it is not empty, new TOTP instance will be initialized
+// with SHA1 algorithm, 6 code digits and 30 seconds interval.
 func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Telegram {
 	var totp *gotp.TOTP
 	if len(otpSeed) > 0 {
@@ -729,31 +891,24 @@ func New(apiId int32, apiHash, dbLocation, filesLocation, otpSeed string) *Teleg
 	}
 	tg := &Telegram{
 		Commands: make(map[string]CommandFunc),
-		mtParameters: &mt.SetTdlibParametersRequest{
-			UseTestDc:              false,
-			DatabaseDirectory:      dbLocation,
-			FilesDirectory:         filesLocation,
-			UseFileDatabase:        false,
-			UseChatInfoDatabase:    false,
-			UseMessageDatabase:     false,
-			UseSecretChats:         false,
-			ApiId:                  apiId,
-			ApiHash:                apiHash,
-			SystemLanguageCode:     "en",
-			DeviceModel:            runtime.GOOS,
-			SystemVersion:          "n/d",
-			ApplicationVersion:     AppVersion,
-			EnableStorageOptimizer: false,
-			IgnoreFileNames:        false,
+		TdParameters: &nc.SetTdlibParametersRequest{
+			DatabaseDirectory:  dbLocation,
+			FilesDirectory:     filesLocation,
+			ApiId:              apiId,
+			ApiHash:            apiHash,
+			SystemLanguageCode: "en",
+			DeviceModel:        runtime.GOOS,
+			SystemVersion:      "n/d",
+			ApplicationVersion: AppVersion,
 		},
-		totp:   totp,
-		logger: defaultLogger,
+		TOTP:   totp,
+		Logger: DebugLogger,
 	}
-	_ = tg.AddCommand(cmdStart, tg.startF)
-	_ = tg.AddCommand(cmdAttach, tg.attachF)
-	_ = tg.AddCommand(cmdDetach, tg.detachF)
-	_ = tg.AddCommand(cmdSetAdmin, tg.setAdminF)
-	_ = tg.AddCommand(cmdRmAdmin, tg.rmAdminF)
-	_ = tg.AddCommand(cmdState, tg.stateF)
+	_ = tg.AddCommand(CmdStart, tg.startF)
+	_ = tg.AddCommand(CmdAttach, tg.attachF)
+	_ = tg.AddCommand(CmdDetach, tg.detachF)
+	_ = tg.AddCommand(CmdSetAdmin, tg.setAdminF)
+	_ = tg.AddCommand(CmdRmAdmin, tg.rmAdminF)
+	_ = tg.AddCommand(CmdState, tg.stateF)
 	return tg
 }

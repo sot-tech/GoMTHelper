@@ -38,6 +38,7 @@ type TGRenderer struct {
 	index          int
 	entities       []*mt.TextEntity
 	openedEntities map[md.NodeType]*mt.TextEntity
+	prevNodeType   md.NodeType
 }
 
 func NewRenderer() *TGRenderer {
@@ -70,18 +71,37 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 			l += 2 // fix for extended unicode (i.e. emoji)
 		}
 	}
+	nodeType := node.Type
 	if entering {
 		var t mt.TextEntityType
-		switch node.Type {
+		switch nodeType {
 		case md.Strong:
 			t = &mt.TextEntityTypeBold{}
 		case md.Emph:
 			t = &mt.TextEntityTypeItalic{}
 		case md.Del:
 			t = &mt.TextEntityTypeStrikethrough{}
+		case md.Heading:
+			// heading for TG means hashtag in start of line.
+			// we need to revert hash (deleted by parser) and, if prev node was not
+			// paragraph - new line
+			var prefix []byte
+			if r.prevNodeType == md.Paragraph {
+				prefix = []byte{'#'}
+			} else {
+				prefix = []byte{'\n', '#'}
+			}
+			if _, err := w.Write(prefix); err != nil {
+				return md.Terminate
+			}
+			l++
 		case md.Link:
 			t = &mt.TextEntityTypeTextUrl{Url: string(node.Destination)}
+		case md.Softbreak:
+			fallthrough
 		case md.Hardbreak:
+			fallthrough
+		case md.Paragraph:
 			node.Literal = []byte{'\n'}
 			l++
 		case md.Code:
@@ -111,22 +131,18 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 				Length: 0,
 				Type:   t,
 			}
-			r.openedEntities[node.Type] = ent
+			r.openedEntities[nodeType] = ent
 		}
-	} else {
-		if node.Type == md.Paragraph {
-			node.Literal = []byte{'\n', '\n'}
-			l += 2
-		} else if ent := r.openedEntities[node.Type]; ent != nil {
-			ent.Length = int32(r.index+l) - ent.Offset
-			if ent.Length > 0 {
-				r.entities = append(r.entities, ent)
-			}
-			r.openedEntities[node.Type] = nil
+	} else if ent := r.openedEntities[nodeType]; ent != nil {
+		ent.Length = int32(r.index+l) - ent.Offset
+		if ent.Length > 0 {
+			r.entities = append(r.entities, ent)
 		}
+		r.openedEntities[nodeType] = nil
 	}
 
 	r.index += l
+	r.prevNodeType = nodeType
 	if _, err := w.Write(node.Literal); err == nil {
 		return md.GoToNext
 	} else {
@@ -134,17 +150,15 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 	}
 }
 
-func (r *TGRenderer) RenderHeader(w io.Writer, node *md.Node) {
-	_, _ = w.Write(node.Literal)
+func (r *TGRenderer) RenderHeader(io.Writer, *md.Node) {
 }
 
-func (r *TGRenderer) RenderFooter(w io.Writer, node *md.Node) {
-	_, _ = w.Write(node.Literal)
+func (r *TGRenderer) RenderFooter(io.Writer, *md.Node) {
 }
 
 func FormatText(t string) *mt.FormattedText {
 	rnd := NewRenderer()
-	data := md.Run([]byte(t), md.WithRenderer(rnd), md.WithExtensions(md.HardLineBreak))
+	data := md.Run([]byte(t), md.WithRenderer(rnd), md.WithExtensions(md.HardLineBreak|md.Strikethrough))
 	out := mt.FormattedText{
 		Text:     string(data),
 		Entities: rnd.GetEntities(),

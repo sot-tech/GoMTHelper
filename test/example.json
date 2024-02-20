@@ -8,7 +8,7 @@
 		"error": "Operation error: ",
 		"auth": "Unauthorized",
 		"cmds": {
-			"start": "TtKVC\nAvailable commands:\n/start - this help\n/attach [OTP] - subscribe\n/detach - unsubscribe\n/state - state of chat",
+			"start": "TestBot\nAvailable commands:\n/start - this help\n/attach - subscribe\n/detach - unsubscribe\n/state - state of chat",
 			"attach": "Added to announce list",
 			"detach": "Removed from announce list",
 			"setadmin": "Access granted",
@@ -16,7 +16,7 @@
 			"unknown": "Unknown command"
 		}
 	},
-	"text": "**Test** _formatted_ [message](http://localhost.localdomain)",
+	"text": "**Bold** _ItalicDash_ *ItalicStar* [~~**_BoldItalicDelLink_**~~](http://localhost.localdomain) \n#hashtag text\nnew line\n\nnew paragraph",
 	"image": "test/test.jpg",
 	"video": "test/test.mp4"
 }
