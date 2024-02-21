@@ -24,7 +24,7 @@
  * OF SUCH DAMAGE.
  */
 
-package MTHelper
+package mthelper
 
 import (
 	"io"
@@ -34,6 +34,8 @@ import (
 	mt "github.com/zelenin/go-tdlib/client"
 )
 
+// TGRenderer type for Blackfriday processor
+// to create Telegram text entities
 type TGRenderer struct {
 	index          int
 	entities       []*mt.TextEntity
@@ -41,6 +43,7 @@ type TGRenderer struct {
 	prevNodeType   md.NodeType
 }
 
+// NewRenderer creates new converter
 func NewRenderer() *TGRenderer {
 	return &TGRenderer{
 		entities:       make([]*mt.TextEntity, 0, 10),
@@ -48,6 +51,9 @@ func NewRenderer() *TGRenderer {
 	}
 }
 
+// GetEntities returns ready Telegram text entities.
+// Function will return empty slice if instance not passed to
+// Markdown processor as blackfriday.WithRenderer
 func (r *TGRenderer) GetEntities() []*mt.TextEntity {
 	if r.openedEntities != nil {
 		for _, v := range r.openedEntities {
@@ -61,6 +67,7 @@ func (r *TGRenderer) GetEntities() []*mt.TextEntity {
 	return r.entities
 }
 
+// RenderNode rendering method for Blackfriday processor
 func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.WalkStatus {
 	s := string(node.Literal)
 	l := 0
@@ -143,19 +150,23 @@ func (r *TGRenderer) RenderNode(w io.Writer, node *md.Node, entering bool) md.Wa
 
 	r.index += l
 	r.prevNodeType = nodeType
+	res := md.Terminate
 	if _, err := w.Write(node.Literal); err == nil {
-		return md.GoToNext
-	} else {
-		return md.Terminate
+		res = md.GoToNext
 	}
+	return res
 }
 
+// RenderHeader does nothing
 func (r *TGRenderer) RenderHeader(io.Writer, *md.Node) {
 }
 
+// RenderFooter does nothing
 func (r *TGRenderer) RenderFooter(io.Writer, *md.Node) {
 }
 
+// FormatText parses Telegram Markdown text
+// to client.FormattedText
 func FormatText(t string) *mt.FormattedText {
 	rnd := NewRenderer()
 	data := md.Run([]byte(t), md.WithRenderer(rnd), md.WithExtensions(md.HardLineBreak|md.Strikethrough))

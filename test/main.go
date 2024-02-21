@@ -48,7 +48,7 @@ type Config struct {
 	Text     string
 	Image    string
 	Video    string
-	Msg      MTHelper.TGMessages
+	Msg      mthelper.TGMessages
 }
 
 func main() {
@@ -62,14 +62,14 @@ func main() {
 	if err == nil {
 		conf := Config{}
 		if err = json.Unmarshal(confData, &conf); err == nil {
-			tg := MTHelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
+			tg := mthelper.New(conf.ApiId, conf.ApiHash, "test/dbdir", "test/fdir", conf.Otp)
 			defer func() {
 				tg.Close()
 			}()
 			tg.Messages = conf.Msg
 
 			if len(conf.BotToken) > 0 {
-				err = tg.LoginAsBot(conf.BotToken, MTHelper.MtLogWarning)
+				err = tg.LoginAsBot(conf.BotToken, mthelper.MtLogWarning)
 			} else {
 				err = tg.LoginAsUser(func(in string) (string, error) {
 					var err error
@@ -77,7 +77,7 @@ func main() {
 					fmt.Println(in)
 					_, err = fmt.Scanln(&out)
 					return out, err
-				}, MTHelper.MtLogWarning)
+				}, mthelper.MtLogWarning)
 			}
 			if err == nil {
 				chats, _ := tg.GetChats()
