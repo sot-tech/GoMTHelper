@@ -202,7 +202,8 @@ type Telegram struct {
 	// Structure, containing message responses
 	Messages TGMessages
 	// Commands - map of command handlers.
-	// Keys are slash-prefixed commands (/start, /help...).
+	// Keys are commands (/start, /help...) or word-like messages
+	// if bot can read all messages in chat (help, hello...).
 	// See CommandFunc specification.
 	Commands         map[string]CommandFunc
 	commandsMu       sync.RWMutex
@@ -214,11 +215,10 @@ type Telegram struct {
 	TOTP *gotp.TOTP
 	// Logger internal logger.
 	// Utility will panic if nil, provide at least SilentLogger
-	Logger                TgLogger
-	fileCallbacks         sync.Map
-	fileCallbacksOutdated sync.Map
-	ownNames              []string
-	stopWaiter            sync.WaitGroup
+	Logger        TgLogger
+	fileCallbacks sync.Map
+	ownNames      []string
+	stopWaiter    sync.WaitGroup
 }
 
 func (tg *Telegram) startF(chat int64, _ string, _ []string) error {
@@ -423,7 +423,7 @@ func (tg *Telegram) startMessagesListener(closeChan <-chan bool) {
 					msg.Content.MessageContentType() == nc.TypeMessageText {
 					content := upMsg.Message.Content.(*nc.MessageText)
 					if content.Text != nil && len(content.Text.Text) > 0 && content.Text.Text[0] == '/' {
-						tg.Logger.Debug("Got new message:", upMsg.Message)
+						tg.Logger.Debug("New message from:", upMsg.Message.ChatId)
 						tg.stopWaiter.Add(1)
 						go func(msg *nc.Message) {
 							defer tg.stopWaiter.Done()
@@ -444,6 +444,10 @@ func (tg *Telegram) startFileUploadListener(closeChan <-chan bool) {
 	defer tg.stopWaiter.Done()
 	listener := tg.Client.GetListener()
 	defer listener.Close()
+
+	// Client may lie about file path after upload complete.
+	// We will TRY to remember file ID to get real path
+	var fileIDtoPath sync.Map
 	for {
 		select {
 		case up := <-listener.Updates:
@@ -453,12 +457,13 @@ func (tg *Telegram) startFileUploadListener(closeChan <-chan bool) {
 					updateMsg.File != nil &&
 					updateMsg.File.Remote != nil &&
 					updateMsg.File.Local != nil {
-					if updateMsg.File.Remote.IsUploadingCompleted {
-						tg.Logger.Debug("File upload complete ", updateMsg.File.Remote.Id)
-						if updateMsg.File.Local != nil {
-							if absPath, err := filepath.Abs(updateMsg.File.Local.Path); err == nil {
+					upFile := updateMsg.File
+					if upFile.Remote.IsUploadingCompleted {
+						if pathAny, found := fileIDtoPath.LoadAndDelete(upFile.Id); found {
+							realPath := pathAny.(string)
+							tg.Logger.Debug("File ", upFile.Id, realPath, " upload complete")
+							if absPath, err := filepath.Abs(realPath); err == nil {
 								if callbacks, found := tg.fileCallbacks.LoadAndDelete(absPath); found {
-									tg.fileCallbacksOutdated.Store(absPath, true)
 									tg.stopWaiter.Add(1)
 									go func(callbacks []FileUploadCallback, path, id string) {
 										defer tg.stopWaiter.Done()
@@ -466,23 +471,23 @@ func (tg *Telegram) startFileUploadListener(closeChan <-chan bool) {
 										for _, callback := range callbacks {
 											callback(path, id)
 										}
-									}(callbacks.([]FileUploadCallback), absPath, updateMsg.File.Remote.Id)
-								} else if _, found = tg.fileCallbacksOutdated.LoadAndDelete(absPath); !found {
-									tg.Logger.Warning("Callbacks for ", absPath, " not registered")
+									}(callbacks.([]FileUploadCallback), absPath, upFile.Remote.Id)
+								} else {
+									tg.Logger.Debug("Callbacks for ", absPath, " not registered")
 								}
 							} else {
 								tg.Logger.Error(err)
 							}
-						} else {
-							tg.Logger.Warning("Unable to determine local file for ", updateMsg.File.Remote.Id)
 						}
 					} else {
+						fileIDtoPath.Store(upFile.Id, upFile.Local.Path)
 						tg.Logger.Debug("File ",
-							updateMsg.File.Local.Path,
+							upFile.Id,
+							upFile.Local.Path,
 							" uploading: ",
-							updateMsg.File.Remote.UploadedSize,
+							upFile.Remote.UploadedSize,
 							" of ",
-							updateMsg.File.Size, "bytes",
+							upFile.Size, "bytes",
 						)
 					}
 				}

@@ -82,22 +82,28 @@ func main() {
 			if err == nil {
 				chats, _ := tg.GetChats()
 				logger.Info(chats)
+				_ = tg.AddCommand("/echo", func(chatId int64, cmd string, args []string) error {
+					tg.SendMsg(fmt.Sprint("Your chat ID: ", chatId, "\nCommand is: ", cmd, "\nArguments are: ", args),
+						[]int64{chatId},
+						false)
+					return nil
+				})
 				go tg.HandleUpdates()
 				tg.SendMsg(conf.Text, conf.Chats, true)
 				logger.Info("Message sent")
-				//tg.SendPhotoCallback(MTHelper.MediaParams{
-				//	Path:   conf.Image,
-				//	Width:  0,
-				//	Height: 0,
-				//}, conf.Text, conf.Chats, true, nil)
-				//logger.Info("Photo sent")
-				//tg.SendVideoCallback(MTHelper.MediaParams{
-				//	Path:      conf.Video,
-				//	Width:     0,
-				//	Height:    0,
-				//	Streaming: true,
-				//}, conf.Text, conf.Chats, true, nil)
-				//logger.Info("Video sent")
+				tg.SendPhotoCallback(mthelper.MediaParams{
+					Path:   conf.Image,
+					Width:  0,
+					Height: 0,
+				}, conf.Text, conf.Chats, true, nil)
+				logger.Info("Photo sent")
+				tg.SendVideoCallback(mthelper.MediaParams{
+					Path:      conf.Video,
+					Width:     0,
+					Height:    0,
+					Streaming: true,
+				}, conf.Text, conf.Chats, true, nil)
+				logger.Info("Video sent")
 			}
 		}
 	}
