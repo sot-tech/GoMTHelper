@@ -85,28 +85,28 @@ const chatsPageNum int32 = math.MaxInt32
 // TgLogger abstract logger interface for MTHelper.
 // Custom logger can be set for specific Telegram instance.
 type TgLogger interface {
-	Error(args ...interface{})
-	Warning(args ...interface{})
-	Notice(args ...interface{})
-	Info(args ...interface{})
-	Debug(args ...interface{})
+	Error(args ...any)
+	Warning(args ...any)
+	Notice(args ...any)
+	Info(args ...any)
+	Debug(args ...any)
 }
 
 type nopLogger struct{}
 
-func (nopLogger) Error(...interface{}) {
+func (nopLogger) Error(...any) {
 }
 
-func (nopLogger) Warning(...interface{}) {
+func (nopLogger) Warning(...any) {
 }
 
-func (nopLogger) Notice(...interface{}) {
+func (nopLogger) Notice(...any) {
 }
 
-func (nopLogger) Info(...interface{}) {
+func (nopLogger) Info(...any) {
 }
 
-func (nopLogger) Debug(...interface{}) {
+func (nopLogger) Debug(...any) {
 }
 
 // SilentLogger discards all messages
@@ -565,7 +565,8 @@ func (tg *Telegram) SendMsg(msgText string, chatIDs []int64, formatted bool) {
 	}
 }
 
-func (tg *Telegram) sendMediaMessage(chatIDs []int64,
+func (tg *Telegram) sendMediaMessage(
+	chatIDs []int64,
 	content nc.InputMessageContent,
 	fileToWatch string,
 	idSetter FileUploadCallback,
@@ -619,7 +620,8 @@ func (tg *Telegram) sendMediaMessage(chatIDs []int64,
 // If formatted flag checked, msgText will be parsed as markdown.
 // Function works asynchronous and will execute callback (if any) after
 // message will be sent to all chatIds.
-func (tg *Telegram) SendPhotoCallback(photo MediaParams,
+func (tg *Telegram) SendPhotoCallback(
+	photo MediaParams,
 	msgText string,
 	chatIds []int64,
 	formatted bool,
@@ -675,7 +677,8 @@ func (tg *Telegram) SendPhoto(photo MediaParams, msgText string, chatIds []int64
 // If formatted flag checked, msgText will be parsed as markdown.
 // Function works asynchronous and will execute callback (if any) after
 // message will be sent to all chatIds.
-func (tg *Telegram) SendVideoCallback(video MediaParams,
+func (tg *Telegram) SendVideoCallback(
+	video MediaParams,
 	msgText string,
 	chatIds []int64,
 	formatted bool,
@@ -771,10 +774,9 @@ func (tg *Telegram) GetChats() ([]int64, error) {
 // logLevel used to limit messages from native TD library.
 func (tg *Telegram) LoginAsBot(botToken string, logLevel TdLogLevel) error {
 	var err error
-	auth := nc.BotAuthorizer(botToken)
+	auth := nc.BotAuthorizer(tg.TdParameters, botToken)
 	tg.clientMu.Lock()
 	defer tg.clientMu.Unlock()
-	auth.TdlibParameters <- tg.TdParameters
 	if tg.Client, err = nc.NewClient(auth, logLevel.buildOption()); err == nil {
 		var me *nc.User
 		if me, err = tg.Client.GetMe(); err == nil {
@@ -796,7 +798,7 @@ var ErrAuthHandlerNotProvided = errors.New("authorization handler not provided")
 // logLevel used to limit messages from native TD library.
 func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLevel TdLogLevel) error {
 	var err, authErr error
-	auth := nc.ClientAuthorizer()
+	auth := nc.ClientAuthorizer(tg.TdParameters)
 	tg.clientMu.Lock()
 	defer tg.clientMu.Unlock()
 	go func() {
@@ -812,7 +814,7 @@ func (tg *Telegram) LoginAsUser(inputHandler func(string) (string, error), logLe
 				authErr = errors.New("connection closing " + stateType)
 				return
 			case nc.TypeAuthorizationStateWaitTdlibParameters:
-				auth.TdlibParameters <- tg.TdParameters
+				auth.TdlibParameters = tg.TdParameters
 				continue
 			case nc.TypeAuthorizationStateWaitPhoneNumber:
 				inputChan = auth.PhoneNumber
